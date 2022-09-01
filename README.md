@@ -6,6 +6,8 @@ This repo is intended for the Universal Print team to share resources such as sa
 
 **IMPORTANT DISCLAIMER:** The resources in this repo are meant for educational purposes only. They are meant to be used for reference to enable you to build your own scripts and applications. 
 
+===================
+
 ## Microsoft Open Source Code of Conduct
 
 ### Contributing
