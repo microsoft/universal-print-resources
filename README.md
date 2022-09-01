@@ -4,9 +4,11 @@
 
 This repo is intended for the Universal Print team to share resources such as sample code and scripts that may be useful to developers and administrators.
 
-**IMPORTANT DISCLAIMER:** The resources in this repo are meant for educational purposes only. They are meant to be used for reference to enable you to build your own scripts and applications. 
+The Universal Print team does not make any commitments to the frequency of updating these resources or to responding to issues reported about them.
 
-===================
+### IMPORTANT DISCLAIMER
+
+**The resources in this repo are meant for educational purposes only and must not be used as is. They are intended to be used for reference to enable you to build your own scripts and applications.**
 
 ## Microsoft Open Source Code of Conduct
 
