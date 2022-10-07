@@ -21,28 +21,23 @@
 #==========================================================================
 
 
-<# param(
+param(
     [Parameter(Position=0, Mandatory=$true)]
     [string]$ConnectorName
 )
- #>
 
-# CleanupConnector $ConnectorName
+# Install the required module by running Install-Module "UniversalPrintManagement"
+#Requires -Modules "UniversalPrintManagement"
 
 function CleanupConnector {
     Param(
-    [Parameter(Mandatory=$true)]
-    [string] $ConnectorName
+        [Parameter(Mandatory=$true)]
+        [string] $ConnectorName
     )
 
     Write-Host "Checking for elevated permissions..."
     if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    throw "Insufficient permissions to run this script. Open the PowerShell console as an administrator and run this script again."
-    }
-
-    Write-Host "Checking if Universal Print Powershell module is installed..."
-    if (-NOT (Get-InstalledModule -Name UniversalPrintManagement)) {
-        throw "Please install the Universal Print Powershell module (UniversalPrintManagement) before proceeding further."
+        throw "Insufficient permissions to run this script. Open the PowerShell console as an administrator and run this script again."
     }
 
     # Warn the user; these actions are not recoverable
@@ -53,9 +48,10 @@ function CleanupConnector {
     # Ensure that the connector name provided is same as the connector installed on this machine
     if ($LocalConnector.Name -ne $ConnectorName) {
 
+    # Format the error messae. Avoid whitespace as those will show up in actual message.
     $errorMessage=@"
-    The locally installed connector $($LocalConnectorName) does not match the name provided to this script $($ConnectorName).
-    `nYou must run this script on the same machine as the connector that is to be cleaned up.
+The locally installed connector $($LocalConnectorName) does not match the name provided to this script $($ConnectorName).
+`nYou must run this script on the same machine as the connector that is to be cleaned up.
 "@
 
     throw $errorMessage
@@ -121,3 +117,6 @@ function CleanupConnector {
         Get-ChildItem -Path $env:ProgramData\Microsoft\UniversalPrintConnector -EA SilentlyContinue | Remove-Item -Recurse -Force
     }
 }
+
+## Invoke the main method
+#CleanupConnector $ConnectorName
