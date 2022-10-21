@@ -10,7 +10,7 @@
 # Reset a printer that is registered with Universal Print.
 # 
 # The script can help reset an existing printer that is registered with Universal Print. If the printer
-# is having issues printing successfully, or showing the correct printer status, resetting it may help
+# is having issues printing successfully, or not showing the correct printer status, resetting it may help
 # clear the issue. This is similar to restarting the Print Connector service or restarting the machine.
 #
 # Run the script locally using an elevated Powershell window, from the same machine that has the 
