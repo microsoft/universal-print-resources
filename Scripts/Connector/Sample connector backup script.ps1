@@ -7,22 +7,33 @@
 # To restore a Connector look at "Sample connector restore script.ps1"
 
 # Create the needed directories
-md C:\ConnectorBackup; md C:\ConnectorBackup\Certs; md C:\ConnectorBackup\CloudData
+md C:\ConnectorBackup
+md C:\ConnectorBackup\Certs
+md C:\ConnectorBackup\CloudData
  
 # Backup local printers
 c:\windows\system32\spool\tools\PrintBrm.exe -B -F C:\ConnectorBackup\printers.brm
  
 # Set permissions for certificates
-takeown /R /F "C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys" ; icacls "C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys" --% /grant Administrators:(OI)(CI)F /T
+takeown /R /F "C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys"
+icacls "C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys" --% /grant Administrators:(OI)(CI)F /T
  
 # Export UP certificates 
-cd Cert:\localmachine\PrintProxyStore; Get-ChildItem -Path 'Cert:\localmachine\PrintProxyStore' | Where-Object { $_.hasPrivateKey } | Foreach-Object { Export-PfxCertificate -Cert $_.ThumbPrint -FilePath "C:\ConnectorBackup\Certs\$($_.Subject)" -Password (ConvertTo-SecureString -String 'password' -AsPlainText -Force) }
+cd Cert:\localmachine\PrintProxyStore
+Get-ChildItem -Path 'Cert:\localmachine\PrintProxyStore' | Where-Object { $_.hasPrivateKey } | Foreach-Object { Export-PfxCertificate -Cert $_.ThumbPrint -FilePath "C:\ConnectorBackup\Certs\$($_.Subject)" -Password (ConvertTo-SecureString -String 'password' -AsPlainText -Force) }
  
 # Export the Connector registry
 reg export HKLM\SOFTWARE\Microsoft\UniversalPrint C:\ConnectorBackup\connector.reg
  
 # Export the Cloud Data registries
-$counter = 0; $allPrinters = Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Printers'; foreach ($printer in $allPrinters) { $counter++; $RegKeyName = "$($printer.Name)\CloudData"; $FileName = "C:\ConnectorBackup\CloudData\CloudData$($counter).reg"; reg export $RegKeyName $FileName }
+$allPrinters = Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Printers'
+foreach ($printer in $allPrinters) {
+ $RegKeyName = "$($printer.Name)\CloudData"
+ $PrinterName = $printer.Name | Split-Path -Leaf
+ $FileName = "C:\ConnectorBackup\CloudData\$($PrinterName -Replace '[^a-zA-Z0-9]','')_CloudData.reg"
+ Write-Host $RegKeyName $FileName
+ reg export $RegKeyName $FileName
+}
  
 # Copy Connector config json
 copy C:\windows\PrintConnectorSvc\config.json C:\ConnectorBackup\
