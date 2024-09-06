@@ -2,9 +2,8 @@
 # Version 1.0
 #
 #========================== IMPORTANT DISCLAIMER ==========================
-# PLEASE DO NOT RUN THIS SCRIPT IN A PRODUCTION ENVIRONMENT.
-# This script is provided as a sample for reference purposes only.
-# Please read it and create your own script.
+# This script is provided as a sample for reference purposes.
+# Please read it and adapt it for your specific needs.
 #==========================================================================
 
 # This script cleans up the connector from both local machine and Universal Print service.
