@@ -2,9 +2,8 @@
 # Version 1.0
 #
 #========================== IMPORTANT DISCLAIMER ==========================
-# PLEASE DO NOT RUN THIS SCRIPT IN A PRODUCTION ENVIRONMENT.
-# This script is provided as a sample for reference purposes only.
-# Please read it and create your own script.
+# This script is provided as a sample for reference purposes.
+# Please read it and adapt it for your specific needs.
 #==========================================================================
 
 # This script cleans up the connector from both local machine and Universal Print service.
@@ -43,12 +42,16 @@ function CleanupConnector {
     # Warn the user; these actions are not recoverable
     Write-Warning "This script will unshare/unregister all printers associated with this connector, and unregister the connector. The actions are not recoverable." -WarningAction Inquire
 
+    # Stop services
+    net stop "Print Connector service"
+    net stop PrintConnectorUpdaterSvc
+
     $LocalConnector = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\UniversalPrint\Connector'
 
     # Ensure that the connector name provided is same as the connector installed on this machine
     if ($LocalConnector.Name -ne $ConnectorName) {
 
-    # Format the error messae. Avoid whitespace as those will show up in actual message.
+    # Format the error message. Avoid whitespace as those will show up in actual message.
     $errorMessage=@"
 The locally installed connector $($LocalConnectorName) does not match the name provided to this script $($ConnectorName).
 `nYou must run this script on the same machine as the connector that is to be cleaned up.
@@ -119,4 +122,4 @@ The locally installed connector $($LocalConnectorName) does not match the name p
 }
 
 ## Invoke the main method
-#CleanupConnector $ConnectorName
+CleanupConnector $ConnectorName
