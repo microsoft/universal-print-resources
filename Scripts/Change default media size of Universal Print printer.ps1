@@ -10,6 +10,8 @@ param (
     [string]$MediaSize
 )
 
+$ErrorActionPreference = 'Stop'
+
 # Ensure Microsoft Graph module is installed
 Write-Host "Checking if Microsoft Graph Powershell module is installed..."
 if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
@@ -18,6 +20,7 @@ if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
 }
 
 # Connect to Microsoft Graph with required permissions
+Write-Host "Logging in..."
 Connect-MgGraph -Scopes "Printer.ReadWrite.All"
 
 # Confirm connection
@@ -35,6 +38,7 @@ $body = @{
 } | ConvertTo-Json -Depth 3
 
 # Send PATCH request to update printer defaults
+Write-Host "Updating default media size to '$MediaSize' for printer ID: $PrinterId ..."
 $response = Invoke-MgGraphRequest -Method PATCH `
     -Uri "https://graph.microsoft.com/v1.0/print/printers/$PrinterId" `
     -Body $body `
@@ -43,8 +47,9 @@ $response = Invoke-MgGraphRequest -Method PATCH `
 Write-Host "Default media size updated to '$MediaSize' for printer ID: $PrinterId"
 
 # Retrieve and display the updated printer defaults
+Write-Host "Getting defaults for printer ID: $PrinterId ..."
 $printer = Invoke-MgGraphRequest -Method GET `
     -Uri "https://graph.microsoft.com/v1.0/print/printers/$PrinterId"
 
-Write-Host "Current Printer Defaults:"
+Write-Host "Current Printer Defaults for printer ID: $PrinterId :"
 $printer.defaults | Format-List
