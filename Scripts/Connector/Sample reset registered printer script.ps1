@@ -13,13 +13,19 @@
 # is having issues printing successfully, or not showing the correct printer status, resetting it may help
 # clear the issue. This is similar to restarting the Print Connector service or restarting the machine.
 #
-# Run the script locally using an elevated Powershell window, from the same machine that has the 
+# Run the script locally using an elevated Windows Powershell window, from the same machine that has the 
 # Universal Print Connector installed.
 
 param(
     [Parameter(Position=0, Mandatory=$true)]
     [string]$PrinterName
 )
+
+# Only Windows Powershell supports calling into the Connector using New-WebServiceProxy
+if ($PSVersionTable.PSEdition -ne 'Desktop') {
+    Write-LogError "This script must be run in Windows PowerShell (not PowerShell Core)."
+    exit 1
+}
 
 function Get-ConnectorServiceUri 
 {
@@ -50,3 +56,4 @@ function Invoke-Main
 
 ## Invoke the main method
 #Invoke-Main
+
