@@ -16,8 +16,14 @@
 # This script automates the process of logging into the PrintConnectorApp, selecting all printers, 
 # and clicking the Register button.
 #
-# Run the script locally using an elevated Powershell window, from the same machine that has the 
-# Universal Print Connector installed.
+# Run the script locally using an elevated Windows Powershell window, from the same machine that has
+# the Universal Print Connector installed.
+
+# Only Windows Powershell supports calling into the Connector using New-WebServiceProxy
+if ($PSVersionTable.PSEdition -ne 'Desktop') {
+    Write-LogError "This script must be run in Windows PowerShell (not PowerShell Core)."
+    exit 1
+}
 
 # Install the required module by running Install-Module "Microsoft.Identity.Client"
 #Requires -Modules "Microsoft.Identity.Client"
