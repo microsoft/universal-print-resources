@@ -105,7 +105,7 @@ try {
         if ([string]::IsNullOrWhiteSpace($_))
         {
             # Skip empty lines
-            continue
+            return
         }
 
         Write-Host "`r`nProcessing new printer from file..." -ForegroundColor Blue

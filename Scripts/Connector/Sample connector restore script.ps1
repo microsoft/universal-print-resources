@@ -30,7 +30,7 @@ Get-ChildItem "C:\ConnectorBackup\CloudData" | Foreach-Object { reg import $_.Fu
 copy C:\ConnectorBackup\config.json C:\windows\PrintConnectorSvc\
  
 # Copy Custom Mappings
-xcopy /S /Y c:\ConnectorBackup\PrintTicketMappings\ C:\ProgramData\Microsoft\UniversalPrintConnector\CustomPrintTicketMappings
+xcopy /S /Y c:\ConnectorBackup\PrintTicketMappings\ C:\ProgramData\Microsoft\UniversalPrintConnector\CustomPrintTicketMappings\
 
 # Restore permissions for certificates
 icacls "C:\ProgramData\Microsoft\Crypto\RSA" /restore c:\ConnectorBackup\certificatePermissions.txt
