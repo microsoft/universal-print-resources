@@ -10,6 +10,8 @@ Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Printers' | ForEach-
     $ClouData = Get-ItemProperty -LiteralPath $CloudDataKey -ErrorAction SilentlyContinue
     if ($ClouData.CloudDeviceId -and $ClouData.ipAddress)
     {
-        Write-Host $ClouData.CloudDeviceId " => " $ClouData.ipAddress
+        $output = "$($ClouData.CloudDeviceId) => $($ClouData.ipAddress)"
+        Write-Host $output
+        Add-Content -Path "PrintersToMove.txt" -Value $output
     }
 }

@@ -14,6 +14,11 @@ Write-Host "This is not intended to create a redundant Connector to run in paral
 Write-Host "Press ENTER to continue the backup."
 Read-Host
 
+if ($PSVersionTable.PSEdition -ne 'Desktop' -or $psISE) {
+    Write-Error "This script must be run in Windows PowerShell console only (not ISE or Core)."
+    exit 1
+}
+
 # Create the needed directories
 md C:\ConnectorBackup
 md C:\ConnectorBackup\Certs
@@ -53,6 +58,7 @@ xcopy /S /Y C:\ProgramData\Microsoft\UniversalPrintConnector\CustomPrintTicketMa
 
 # Restore permissions for certificates
 icacls "C:\ProgramData\Microsoft\Crypto\RSA" /restore c:\ConnectorBackup\certificatePermissions.txt
+Remove-Item "c:\ConnectorBackup\certificatePermissions.txt" -Force
 
 # Restore the original location
 Set-Location $originalLocation

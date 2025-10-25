@@ -8,6 +8,11 @@
 # RUN THIS SCRIPT IN AN ELEVATED POWERSHELL WINDOW
 #Requires -RunAsAdministrator
 
+if ($PSVersionTable.PSEdition -ne 'Desktop' -or $psISE) {
+    Write-Error "This script must be run in Windows PowerShell console only (not ISE or Core)."
+    exit 1
+}
+
 # Stop services
 net stop "Print Connector service"
 net stop PrintConnectorUpdaterSvc

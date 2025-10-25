@@ -11,8 +11,24 @@
 # For each printer in the file, the script will try reinstalling it using Ipp Directed Discovery, registering it with the Connector,
 # and swaping the printers underneath the UP share.
 
+param (
+    [Parameter(Mandatory = $true, HelpMessage = "The file name containing the list of printers you wish to reinstall using IPP")]
+    [string]$FilePath,
+
+    [Parameter(Mandatory = $true, HelpMessage = "Do you want the script to pause before swapping each printer to verify it has the capabilities you need? (y/n)")]
+    [ValidateSet("y", "n")]
+    [string]$Verify
+)
+
 # RUN THIS SCRIPT IN AN ELEVATED POWERSHELL WINDOW
 #Requires -RunAsAdministrator
+
+if ($PSVersionTable.PSEdition -ne 'Desktop' -or $psISE) {
+    Write-Error "This script must be run in Windows PowerShell console only (not ISE or Core)."
+    exit 1
+}
+
+Write-Host "ReinstallPrintersAsIpp v1.0."
 
 #
 # Helper functions
@@ -60,7 +76,7 @@ function Register-LocalPrinterWithUP($ConnectorService, $PrinterName, $Token)
     }
 }
 
-function GetNameOfInstalledPrinters ()
+function Get-InstalledPrinterNames ()
 {
     $installedPrinters = @{}
     Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Print\Printers' | ForEach-Object {
@@ -69,14 +85,9 @@ function GetNameOfInstalledPrinters ()
     return $installedPrinters
 }
 
-
 #
 # Main
 #
-
-Write-Host "ReinstallPrintersAsIpp v1.0."
-$file_path = Read-Host "Please enter file name with the printers you wish to reinstall using IPP "
-$verify = Read-Host "Do you want the script to pause before swapping each printer to verify it has the capabilities you need? (y/n)"
 
 # Sign in to UP
 Connect-UPService
@@ -92,15 +103,15 @@ if (!$isConnectorRegistered)
     Write-Error "Connector needs to be registered first. Please use the Print Connector App to register the Connector." -ErrorAction Stop
 }
 
-# IPP Directed Discovery does not currenlty allow to pass in the name we want to give to the printer
-# so we need to idenitfy the newly installed printers by their V4 Dir
+# Depending on the OS version, IPP Directed Discovery may ignore the printer name we provide
+# so we need to identify the newly installed printers by their V4 Dir
 $newV4DirToUpPrinter = @{}
 
 #
 # Go through the file and reinstall the printers using Ipp Directed discovery
 #
 try {
-    Get-Content -Path $file_path | ForEach-Object {
+    Get-Content -Path $FilePath | ForEach-Object {
         
         if ([string]::IsNullOrWhiteSpace($_))
         {
@@ -127,7 +138,8 @@ try {
             # Try to install the printer through IPP Directed Discovery
             Write-Host "    Installing printer through Ipp"
 
-            # Name will be ignored but some OS versions request it anyways
+            # Depending on the OS version, the Name parameter might be ignored, but others will complain if we don't provide it
+            # So we always pass it in
             Add-Printer -IppURL $printer_url -Name $oldPrinter.Results.DisplayName -ErrorAction Stop
 	        Write-Host "    Completed installation" 
 
@@ -153,8 +165,8 @@ $printersToSwap = @{}
 #
 # Go through the recently installed printers to restore the names
 #
-Write-Host "`r`n----- Register IPP printers with UP  -----`r`n"
-$installedPrinters = GetNameOfInstalledPrinters
+Write-Host "`r`n----- Restore the printer names of recently installed printers -----`r`n"
+$installedPrinters = Get-InstalledPrinterNames
 foreach ($printer in $installedPrinters.GetEnumerator())
 {
     $RegKeyName = "Registry::HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Print\Printers\$($printer.Name)"
@@ -195,7 +207,7 @@ foreach ($printer in $printersToSwap.GetEnumerator())
     $oldPrinter = $printer.Value
 
     # Check the printer setting to decide if you want to proceed registering and swapping the printers
-    if ($verify -ne "n")
+    if ($Verify -ne "n")
     {
         Write-Host "Open the printer settings of " $newPrinter_name " to verify the capabilities that will be available."
         $proceed = Read-Host "Do you want to proceed with registration and swap? (y/n)"

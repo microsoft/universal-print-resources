@@ -20,8 +20,8 @@
 # the Universal Print Connector installed.
 
 # Only Windows Powershell supports calling into the Connector using New-WebServiceProxy
-if ($PSVersionTable.PSEdition -ne 'Desktop') {
-    Write-LogError "This script must be run in Windows PowerShell (not PowerShell Core)."
+if ($PSVersionTable.PSEdition -ne 'Desktop' -or $psISE) {
+    Write-Error "This script must be run in Windows PowerShell console only (not ISE or Core)."
     exit 1
 }
 
