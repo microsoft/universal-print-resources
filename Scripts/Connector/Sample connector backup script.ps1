@@ -7,9 +7,17 @@
 # RUN THIS SCRIPT IN AN ELEVATED POWERSHELL WINDOW
 #Requires -RunAsAdministrator
 
+# Save the current location to restore it later
+$originalLocation = Get-Location
+
 Write-Host "This is not intended to create a redundant Connector to run in parallel with this Connector. Attempting to do so will cause printing failures. It is only intended to backup a Connector so it can be restored in case of machine failure or moving to another machine." -ForegroundColor Yellow
 Write-Host "Press ENTER to continue the backup."
 Read-Host
+
+if ($PSVersionTable.PSEdition -ne 'Desktop' -or $psISE) {
+    Write-Error "This script must be run in Windows PowerShell console only (not ISE or Core)."
+    exit 1
+}
 
 # Create the needed directories
 md C:\ConnectorBackup
@@ -46,7 +54,11 @@ foreach ($printer in $allPrinters) {
 copy C:\windows\PrintConnectorSvc\config.json C:\ConnectorBackup\
  
 # Copy Custom Mappings
-xcopy /S /Y C:\ProgramData\Microsoft\UniversalPrintConnector\CustomPrintTicketMappings c:\ConnectorBackup\PrintTicketMappings\
+xcopy /S /Y C:\ProgramData\Microsoft\UniversalPrintConnector\CustomPrintTicketMappings\ c:\ConnectorBackup\PrintTicketMappings\
 
 # Restore permissions for certificates
 icacls "C:\ProgramData\Microsoft\Crypto\RSA" /restore c:\ConnectorBackup\certificatePermissions.txt
+Remove-Item "c:\ConnectorBackup\certificatePermissions.txt" -Force
+
+# Restore the original location
+Set-Location $originalLocation

@@ -34,6 +34,11 @@ function CleanupConnector {
         [string] $ConnectorName
     )
 
+    if ($PSVersionTable.PSEdition -ne 'Desktop' -or $psISE) {
+        Write-Error "This script must be run in Windows PowerShell console only (not ISE or Core)."
+        exit 1
+    }
+
     Write-Host "Checking for elevated permissions..."
     if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
         throw "Insufficient permissions to run this script. Open the PowerShell console as an administrator and run this script again."

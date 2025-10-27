@@ -8,6 +8,11 @@
 # RUN THIS SCRIPT IN AN ELEVATED POWERSHELL WINDOW
 #Requires -RunAsAdministrator
 
+if ($PSVersionTable.PSEdition -ne 'Desktop' -or $psISE) {
+    Write-Error "This script must be run in Windows PowerShell console only (not ISE or Core)."
+    exit 1
+}
+
 # Stop services
 net stop "Print Connector service"
 net stop PrintConnectorUpdaterSvc
@@ -30,10 +35,7 @@ Get-ChildItem "C:\ConnectorBackup\CloudData" | Foreach-Object { reg import $_.Fu
 copy C:\ConnectorBackup\config.json C:\windows\PrintConnectorSvc\
  
 # Copy Custom Mappings
-xcopy /S /Y c:\ConnectorBackup\PrintTicketMappings\ C:\ProgramData\Microsoft\UniversalPrintConnector\CustomPrintTicketMappings
-
-# Restore permissions for certificates
-icacls "C:\ProgramData\Microsoft\Crypto\RSA" /restore c:\ConnectorBackup\certificatePermissions.txt
+xcopy /S /Y c:\ConnectorBackup\PrintTicketMappings\ C:\ProgramData\Microsoft\UniversalPrintConnector\CustomPrintTicketMappings\
 
 Write-Host "ENSURE THE CONNECTOR SERVICE HAS BEEN STOPPED IN THE OLD MACHINE BEFORE PROCEEDING." -ForegroundColor Yellow
 Write-Host "Press ENTER to start the restored Connector."
