@@ -117,15 +117,15 @@ public class PrinterRegistration
                     printerRedirectUri = redirectProp.GetString() ?? string.Empty;
                 }
 
-                var PrintServiceResourceId = string.Empty;
+                var printServiceResourceId = string.Empty;
                 if (printerInfo.TryGetProperty("mcp_svc_resource_id", out var resourceProp))
                 {
-                    PrintServiceResourceId = resourceProp.GetString() ?? string.Empty;
+                    printServiceResourceId = resourceProp.GetString() ?? string.Empty;
                 }
 
                 return new PrinterRegistrationResult(
                     printerId, certPem, deviceTokenUrl,
-                    printerClientId, printerRedirectUri, PrintServiceResourceId);
+                    printerClientId, printerRedirectUri, printServiceResourceId);
             }
             else if (statusResp.StatusCode == HttpStatusCode.Accepted)
             {

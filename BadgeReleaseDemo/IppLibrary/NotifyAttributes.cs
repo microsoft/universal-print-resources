@@ -37,7 +37,7 @@ namespace BadgeReleaseDemo.IppLibrary.Common
         public const string NotifySubscriptionIds = "notify-subscription-ids";
         public const string NotifyText = "notify-text";
         public const string NotifyTimeInterval = "notify-time-interval";
-        public const string NotifyUserData = "notify-user-data Subscription";
+        public const string NotifyUserData = "notify-user-data";
         public const string NotifyWait = "notify-wait";
         public const string NotifyIppGet = "ippget";
     }

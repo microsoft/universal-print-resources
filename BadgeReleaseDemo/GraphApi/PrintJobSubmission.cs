@@ -65,8 +65,13 @@ public class PrintJobSubmission
         var jobDoc = JsonSerializer.Deserialize<JsonElement>(responseBody);
         var jobId = jobDoc.GetProperty("id").GetString()!;
 
-        // Extract document ID from the first document in the response
+        // The Graph API auto-creates a document when creating a print job
         var documents = jobDoc.GetProperty("documents");
+        if (documents.GetArrayLength() == 0)
+        {
+            throw new InvalidOperationException("Expected at least one document in the print job response.");
+        }
+
         var documentId = documents[0].GetProperty("id").GetString()!;
 
         return (jobId, documentId);

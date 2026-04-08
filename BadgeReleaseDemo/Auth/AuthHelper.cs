@@ -47,7 +47,7 @@ public class AuthHelper
     }
 
     /// <summary>
-    /// Signs in the user interactively using device code flow.
+    /// Signs in the user using interactive browser-based authentication.
     /// </summary>
     public async Task<string> SignInUserAsync()
     {
@@ -224,7 +224,7 @@ public class AuthHelper
 
         var header = new JwtHeader(signingCredentials)
         {
-            { "x5c", certBase64 },
+            { "x5c", new[] { certBase64 } },
         };
 
         // Use the app's client_id and the standard native client redirect URI

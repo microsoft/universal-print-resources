@@ -50,14 +50,47 @@ public class BadgeManagement
 
         ConsoleHelper.WriteInfo("Badge collection creation initiated.");
 
-        // Poll the operation if it's 202 Accepted
+        // Poll until the badge collection is provisioned (can take up to 10 minutes)
         if (response.StatusCode == HttpStatusCode.Accepted)
         {
-            ConsoleHelper.WriteProgress("Waiting for badge collection to be provisioned...");
-            await Task.Delay(3000);
+            ConsoleHelper.WriteProgress("Waiting for badge collection to be provisioned (this can take up to 10 minutes)...");
+            await WaitForBadgeCollectionProvisioningAsync(accessToken);
         }
 
         return SingleCollectionId;
+    }
+
+    private async Task WaitForBadgeCollectionProvisioningAsync(string accessToken)
+    {
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        const int maxAttempts = 60;
+        const int delayMilliseconds = 10000;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            var response = await httpClient.GetAsync($"{graphBaseUrl}/print/badgeCollections/{SingleCollectionId}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                return;
+            }
+
+            var responseBody = await response.Content.ReadAsStringAsync();
+
+            if (response.StatusCode != HttpStatusCode.NotFound)
+            {
+                throw new HttpRequestException(
+                    $"Failed while waiting for badge collection provisioning: {response.StatusCode} - {responseBody}");
+            }
+
+            if (attempt < maxAttempts)
+            {
+                await Task.Delay(delayMilliseconds);
+            }
+        }
+
+        throw new TimeoutException("Timed out waiting for badge collection provisioning to complete.");
     }
 
     /// <summary>
