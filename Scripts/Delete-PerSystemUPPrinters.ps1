@@ -16,9 +16,6 @@
 
     It then disassociates the per-system printer via: pairtool.exe /disassociate <AEP_ID>
 
-    The printer will be re-provisioned as per-user on the next sign-in or cloud print
-    discovery cycle.
-
     When printers are successfully disassociated, their names are written to a
     timestamped file in C:\Users\Public (accessible to all users on the machine).
 
@@ -75,8 +72,7 @@ OPTIONS:
   -ReportOnly         List detected per-system UP printers without making changes.
                       Run this first to see what would be remediated.
 
-  (default)           Disassociate per-system UP printers. They will re-provision
-                      as per-user on next sign-in or discovery cycle.
+  (default)           Disassociate per-system UP printers.
 
   -LogPath <path>     Write log to the specified file path. Defaults to a
                       timestamped file in the script directory.
