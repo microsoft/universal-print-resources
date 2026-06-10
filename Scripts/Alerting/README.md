@@ -131,7 +131,12 @@ See [Get-Started guide](https://learn.microsoft.com/universal-print/reference/lo
 | `SubscriptionId` | Yes | — | Subscription ID of the resources. |
 | `ResourceGroupName` | Yes | — | Resource group holding the alerting resources. |
 | `WorkspaceName` | Yes | — | Log Analytics workspace to remove. |
+| `DcrResourceGroupName` | No | `ResourceGroupName` | Resource group holding the Data Collection Rule, if different from `ResourceGroupName`. |
+| `DcrName` | No | `dcrup-<workspace>` | Data Collection Rule to remove. |
+| `DeleteTables` | No | (off) | Delete the custom log tables (**deletes all log data**). |
+| `DeleteWorkspace` | No | (off) | Delete the entire Log Analytics workspace. |
 | `DeleteResourceGroup` | No | (off) | Also delete the resource group. |
+| `Force` | No | (off) | Skip confirmation prompts. |
 | `AzureEnvironment` | No | `AzureCloud` | Sovereign cloud (see below). |
 
 > Data retention is configurable for the print job table via `-PrintJobRetentionInDays` and

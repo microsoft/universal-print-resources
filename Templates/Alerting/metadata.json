@@ -2,14 +2,16 @@
   "$schema": "https://aka.ms/azure-quickstart-templates-metadata-schema#",
   "type": "QuickStart",
   "itemDisplayName": "Universal Print Alerting Infrastructure",
-  "description": "Deploys Azure Monitor infrastructure for Universal Print printer health and print job logging, including Log Analytics workspace, Data Collection Rule (with built-in ingestion endpoint), and RBAC permissions.",
+  "description": "Deploys the Azure Monitor billing infrastructure for Universal Print printer health and print job logging, including a Log Analytics workspace, custom log tables, a Data Collection Rule (with built-in ingestion endpoint), and the RBAC role assignments required for ingestion.",
   "summary": "This template sets up the Azure Monitor infrastructure required to receive printer health and print job logs from Universal Print. After deployment, configure the output values in the Universal Print Admin Portal or via Microsoft Graph API.",
-  "githubUsername": "Azure",
+  "githubUsername": "microsoft",
   "dateUpdated": "2026-01-02",
   "validationType": "Manual",
-  "documentationUrl": "https://learn.microsoft.com/universal-print/fundamentals/universal-print-alerting",
+  "documentationUrl": "https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting",
   "environments": [
-    "AzureCloud"
+    "AzureCloud",
+    "AzureUSGovernment",
+    "AzureChinaCloud"
   ],
   "services": [
     "Microsoft.OperationalInsights/workspaces",

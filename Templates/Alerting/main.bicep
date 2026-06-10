@@ -34,7 +34,7 @@ param printJobRetentionInDays int = 30
 @maxValue(2556)
 param printJobTotalRetentionInDays int = 365
 
-@description('Universal Print service principal Object ID. Required for RBAC role assignments that allow data ingestion. Get this value by running: az ad sp show --id da9b70f6-5323-4ce6-ae5c-88dcc5082966 --query id -o tsv (or see Get-Started.md Step 2).')
+@description('Universal Print service principal Object ID. Required for RBAC role assignments that allow data ingestion. Get this value by running: az ad sp show --id da9b70f6-5323-4ce6-ae5c-88dcc5082966 --query id -o tsv (or see Step 2 of the Logs and Alerts setup guide).')
 param universalPrintServicePrincipalObjectId string
 
 @description('Tags to apply to all resources.')

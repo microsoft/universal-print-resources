@@ -176,7 +176,7 @@ The full walkthrough — including sample alert queries — is in the
 
 Bicep/ARM templates only **provision** resources — they have no native way to delete them.
 Use the PowerShell cleanup script published in the
-[`Scripts/`](https://github.com/microsoft/universal-print-resources/tree/main/Scripts) folder
+[`Scripts/Alerting/`](https://github.com/microsoft/universal-print-resources/tree/main/Scripts/Alerting) folder
 (see the Get-Started guide for details). There is no cleanup template.
 
 ## Troubleshooting
@@ -184,7 +184,7 @@ Use the PowerShell cleanup script published in the
 | Symptom | Cause / fix |
 |---------|-------------|
 | `RoleAssignmentExists` | The role assignment already exists — safe to ignore (a previous deployment succeeded). |
-| `AuthorizationFailed` | You need **User Access Administrator** to assign RBAC. Get the role, or deploy without role assignments and assign them manually later. |
+| `AuthorizationFailed` | Assigning the data-ingestion roles requires **User Access Administrator** or **Owner** on the resource group. Ask an administrator with that role to run the deployment, or have them grant you the role first. |
 | `RequestDisallowedByPolicy` | An Azure Policy with a `Deny` effect blocks workspace creation without required settings (e.g., CMK encryption, Private Link). Request a policy exemption or update the template to comply. |
 | Logs not appearing | Wait 5–10 minutes (propagation), verify Universal Print is configured with the correct output values, and check the `DCRLogErrors` table for ingestion errors. |
 
