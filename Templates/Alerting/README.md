@@ -6,8 +6,7 @@ deployment (Bicep or ARM) over the imperative PowerShell setup script.
 
 > 📘 **Start here:** For end-to-end, step-by-step guidance (permissions, finding the service
 > principal Object ID, portal configuration, and sample alert queries), see the
-> **Get-Started guide**: [Set up Logs and Alerts for Universal Print](<GET_STARTED_URL>).
-> <!-- TODO: replace <GET_STARTED_URL> with the published Microsoft Learn URL before merge. -->
+> **Get-Started guide**: [Set up Logs and Alerts for Universal Print](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting).
 
 ## What's in this folder
 
@@ -127,7 +126,7 @@ then select the deployed resources from the dropdowns using the deployment outpu
 Enable the log categories you want: **Printer activity**, **Job activity**, **Billing event**.
 
 The full walkthrough — including sample alert queries — is in the
-[Get-Started guide](<GET_STARTED_URL>).
+[Get-Started guide](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting).
 
 ## Cleanup
 
@@ -149,4 +148,4 @@ Use the PowerShell cleanup script published in the
 
 - [Universal Print documentation](https://learn.microsoft.com/universal-print/)
 - [Azure Monitor Data Collection Rules](https://learn.microsoft.com/azure/azure-monitor/essentials/data-collection-rule-overview)
-- [Set up Logs and Alerts for Universal Print (Get-Started)](<GET_STARTED_URL>)
+- [Set up Logs and Alerts for Universal Print (Get-Started)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting)
