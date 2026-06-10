@@ -93,6 +93,50 @@ az deployment group create \
                universalPrintServicePrincipalObjectId=<object-id>
 ```
 
+## Resource group
+
+Every resource these templates create — the Log Analytics workspace, the custom tables, the
+Data Collection Rule, and the RBAC role assignments — is deployed into the **single resource
+group** you pass with `--resource-group`. The deployment is *resource-group-scoped*
+(`az deployment group create`), so there is no per-resource resource-group parameter.
+
+> **No separate DCR resource group (by design).** The PowerShell setup script exposes an
+> `-AzDcrResourceGroup` parameter that can place the Data Collection Rule in a *different*
+> resource group than the workspace. The templates intentionally omit this: keeping every
+> resource in one resource group is what makes a resource-group-scoped deployment simple and
+> repeatable. Splitting the DCR into another group would require a subscription-scoped
+> deployment with nested modules — complexity the templates deliberately avoid. If you need the
+> DCR in a separate resource group, use the PowerShell script instead.
+
+The target resource group must exist before you deploy (or create it with
+`az group create`, as shown in [Deploy](#deploy)). Its name is surfaced in the
+`resourceGroupName` [output](#outputs) for use in the Universal Print Admin Portal dropdowns.
+
+## Sovereign cloud support
+
+The templates have **no cloud parameter** — the target Azure cloud is determined by your Azure
+CLI context, not by the template. Set the cloud *before* you log in and deploy:
+
+| Cloud | Set context with |
+|-------|------------------|
+| **Azure Public** (Commercial, GCC) | `az cloud set --name AzureCloud` *(default — no action needed)* |
+| **Azure US Government** (GCC High, DoD) | `az cloud set --name AzureUSGovernment` |
+| **Azure China** (21Vianet) | `az cloud set --name AzureChinaCloud` |
+
+```bash
+# Example: deploy into Azure US Government
+az cloud set --name AzureUSGovernment
+az login --tenant <your-tenant-id>
+az deployment group create \
+  --resource-group rg-universalprint-alerting \
+  --template-file main.bicep \
+  --parameters logAnalyticsWorkspaceName=law-universalprint \
+               universalPrintServicePrincipalObjectId=<object-id>
+```
+
+> The PowerShell setup script selects the cloud with its `-AzureEnvironment` parameter instead.
+> With the templates, the `az cloud set` context performs the equivalent selection.
+
 ## Parameters
 
 | Parameter | Type | Default | Description |

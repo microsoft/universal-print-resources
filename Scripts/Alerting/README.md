@@ -116,6 +116,8 @@ See [Get-Started guide](https://learn.microsoft.com/universal-print/reference/lo
 | `LogAnalyticsLocation` | Yes | — | Azure region (e.g., `westus2`). |
 | `LogAnalyticsResourceGroup` | Yes | — | Resource group name (created if missing). |
 | `LogAnalyticsWorkspaceName` | Yes | — | Log Analytics workspace name (created or reused). |
+| `AzDcrResourceGroup` | No | `LogAnalyticsResourceGroup` | Resource group for the Data Collection Rule (created if missing). Set this to place the DCR in a different resource group than the workspace. |
+| `AzDcrName` | No | `dcrup-{workspace}` | Data Collection Rule name (truncated to 30 chars). |
 | `UniversalPrintServicePrincipalObjectId` | No | auto-resolved | UP service principal Object ID for RBAC; resolved via Graph if omitted. |
 | `PrintJobRetentionInDays` | No | 30 | Interactive retention for the print job table (30–730 days). |
 | `PrintJobTotalRetentionInDays` | No | 365 | Total retention including archive (≥ `PrintJobRetentionInDays`, 30–2556 days). |
@@ -135,14 +137,6 @@ See [Get-Started guide](https://learn.microsoft.com/universal-print/reference/lo
 > Data retention is configurable for the print job table via `-PrintJobRetentionInDays` and
 > `-PrintJobTotalRetentionInDays`; other tables use workspace defaults. To customize retention after
 > deployment, see [Configure data retention](https://learn.microsoft.com/azure/azure-monitor/logs/data-retention-configure).
-
-## Script features
-
-- **Fail-fast error handling** — scripts stop immediately on errors.
-- **Retry logic** — exponential backoff for transient failures.
-- **Idempotency** — safe to run multiple times.
-- **Detailed output** — clear status messages and progress, including the resource names to select
-  in the Universal Print admin center.
 
 ## Sovereign cloud support
 
