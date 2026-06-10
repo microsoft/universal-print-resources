@@ -1,0 +1,535 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.39.26.7824",
+      "templateHash": "4197409042649283049"
+    }
+  },
+  "parameters": {
+    "logAnalyticsWorkspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Log Analytics workspace. If a workspace with this name already exists in the resource group, it will be reused; otherwise a new one is created."
+      }
+    },
+    "dataCollectionRuleName": {
+      "type": "string",
+      "defaultValue": "[take(format('dcrup-{0}', parameters('logAnalyticsWorkspaceName')), 30)]",
+      "minLength": 3,
+      "maxLength": 30,
+      "metadata": {
+        "description": "Name of the Data Collection Rule (DCR). Must be 3-30 chars, letters/numbers/hyphens only for kind: Direct."
+      }
+    },
+    "printJobRetentionInDays": {
+      "type": "int",
+      "defaultValue": 30,
+      "minValue": 30,
+      "maxValue": 730,
+      "metadata": {
+        "description": "Interactive retention in days for the print job table (hot storage). Other tables use workspace defaults. To customize retention for all tables, use the Azure portal: https://learn.microsoft.com/azure/azure-monitor/logs/data-retention-configure"
+      }
+    },
+    "printJobTotalRetentionInDays": {
+      "type": "int",
+      "defaultValue": 365,
+      "minValue": 30,
+      "maxValue": 2556,
+      "metadata": {
+        "description": "Total retention in days for the print job table including archive (must be >= printJobRetentionInDays). Other tables use workspace defaults."
+      }
+    },
+    "universalPrintServicePrincipalObjectId": {
+      "type": "string",
+      "metadata": {
+        "description": "Universal Print service principal Object ID. Required for RBAC role assignments that allow data ingestion. Get this value by running: az ad sp show --id da9b70f6-5323-4ce6-ae5c-88dcc5082966 --query id -o tsv (or see Step 2 of the Logs and Alerts setup guide)."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {
+        "purpose": "Universal Print Alerting",
+        "deployedBy": "ARM"
+      },
+      "metadata": {
+        "description": "Tags to apply to all resources."
+      }
+    }
+  },
+  "variables": {
+    "monitoringMetricsPublisherRoleId": "3913510d-42f4-4e42-8a64-420c390055eb",
+    "monitoringContributorRoleId": "749f88d5-cbae-40b8-bcfc-e573ddc772fa",
+    "logAnalyticsContributorRoleId": "92aaf0da-9dab-42b6-94a3-d43ce8d16293",
+    "printerHealthTableName": "UniversalPrintPrinterHealth_CL",
+    "printJobTableName": "UniversalPrintJob_CL",
+    "billingSummaryTableName": "UniversalPrintBillingSummary_CL",
+    "printerHealthStreamName": "Custom-UniversalPrintPrinterHealthData",
+    "printJobStreamName": "Custom-UniversalPrintJobData",
+    "billingSummaryStreamName": "Custom-UniversalPrintBillingSummaryData"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[parameters('logAnalyticsWorkspaceName')]",
+      "location": "[resourceGroup().location]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[format('{0}/{1}', parameters('logAnalyticsWorkspaceName'), variables('printerHealthTableName'))]",
+      "properties": {
+        "schema": {
+          "name": "[variables('printerHealthTableName')]",
+          "columns": [
+            {
+              "name": "TimeGenerated",
+              "type": "datetime",
+              "description": "Printer health status generated time stamp"
+            },
+            {
+              "name": "PrinterId",
+              "type": "string",
+              "description": "The identifier of the Printer"
+            },
+            {
+              "name": "PrinterName",
+              "type": "string",
+              "description": "The name of the Printer"
+            },
+            {
+              "name": "LocationInfo",
+              "type": "dynamic",
+              "description": "Location information (structured object for KQL property access)"
+            },
+            {
+              "name": "PrinterDetails",
+              "type": "dynamic",
+              "description": "Printer details including ShareIds, ShareNames, ConnectorIds, Manufacturer, Model, RegisteredDateTime"
+            },
+            {
+              "name": "PrinterStatusDetails",
+              "type": "dynamic",
+              "description": "Raw IPP printer status: PrinterState, PrinterStateMessage, LastUpdatedDateTime, IsAcceptingJobs, PrinterStateReasonErrors (string[]), PrinterStateReasonWarnings (string[]), PrinterStateReasonReports (string[])"
+            }
+          ]
+        },
+        "plan": "Analytics"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[format('{0}/{1}', parameters('logAnalyticsWorkspaceName'), variables('printJobTableName'))]",
+      "properties": {
+        "schema": {
+          "name": "[variables('printJobTableName')]",
+          "columns": [
+            {
+              "name": "TimeGenerated",
+              "type": "datetime",
+              "description": "Print job event generated time stamp (maps to CreationTime)"
+            },
+            {
+              "name": "JobLifecycleEvent",
+              "type": "string",
+              "description": "The job lifecycle event: submitted, readyForPrinter, acquiredByPrinter, or finished"
+            },
+            {
+              "name": "JobId",
+              "type": "string",
+              "description": "The identifier of the print job"
+            },
+            {
+              "name": "PrinterShareId",
+              "type": "string",
+              "description": "The identifier of the printer share where the job is submitted"
+            },
+            {
+              "name": "PrinterShareName",
+              "type": "string",
+              "description": "The name of the printer share where the job is submitted"
+            },
+            {
+              "name": "PrinterId",
+              "type": "string",
+              "description": "The identifier of the physical printer where the job is routed for printing (can be null)"
+            },
+            {
+              "name": "PrinterName",
+              "type": "string",
+              "description": "The name of the physical printer where the job is routed for printing (can be null)"
+            },
+            {
+              "name": "CreatedBy",
+              "type": "string",
+              "description": "The userprincipalname of the job submitter"
+            },
+            {
+              "name": "CreatedDateTime",
+              "type": "datetime",
+              "description": "The job creation date time in UTC"
+            },
+            {
+              "name": "JobState",
+              "type": "string",
+              "description": "The job state (Graph values): pending, paused, processing, stopped, canceled, aborted, completed"
+            },
+            {
+              "name": "DocumentSizeInBytes",
+              "type": "long",
+              "description": "The size of the print job document in bytes"
+            },
+            {
+              "name": "ReadyForPrinterDateTime",
+              "type": "datetime",
+              "description": "The UTC date time when the document became fetchable by the printer (printer was notified about the job)"
+            },
+            {
+              "name": "CompletedDateTime",
+              "type": "datetime",
+              "description": "The UTC date time when the job reached its terminal state (completed/canceled/aborted)"
+            },
+            {
+              "name": "Details",
+              "type": "dynamic",
+              "description": "Print job details including RedirectedFromPrinterId, Copies, PageCount, MediaSheetCount, ColorMode, DuplexMode, DocumentUploadedDateTime, ReleasedDateTime, AcquiredByPrinterDateTime, DocumentDownloadedDateTime, JobStateReasons (string[]), Dpi, Orientation, InputBin, OutputBin, MediaSize, MediaType, Finishings (string[]), PagesPerSheet, MultipageLayout, Collate, Scaling, FeedOrientation, PauseReason (camelCase: heldForRelease or taskTrigger; present on Submitted events for jobs held by 1P pull-print/held-for-release or by a 3P JobStarted task trigger)"
+            }
+          ]
+        },
+        "plan": "Analytics",
+        "retentionInDays": "[parameters('printJobRetentionInDays')]",
+        "totalRetentionInDays": "[parameters('printJobTotalRetentionInDays')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/tables",
+      "apiVersion": "2022-10-01",
+      "name": "[format('{0}/{1}', parameters('logAnalyticsWorkspaceName'), variables('billingSummaryTableName'))]",
+      "properties": {
+        "schema": {
+          "name": "[variables('billingSummaryTableName')]",
+          "columns": [
+            {
+              "name": "TimeGenerated",
+              "type": "datetime",
+              "description": "Billing summary event generated time stamp"
+            },
+            {
+              "name": "UsedPrintJobCount",
+              "type": "int",
+              "description": "The number of billable print jobs for the billing period"
+            },
+            {
+              "name": "IncludedPrintJobCount",
+              "type": "int",
+              "description": "The included print job limit (maximum allowed jobs) for the billing period"
+            },
+            {
+              "name": "BillingPeriodStartDateTime",
+              "type": "datetime",
+              "description": "The start date of the billing period"
+            },
+            {
+              "name": "BillingPeriodEndDateTime",
+              "type": "datetime",
+              "description": "The end date of the billing period"
+            }
+          ]
+        },
+        "plan": "Analytics"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Insights/dataCollectionRules",
+      "apiVersion": "2023-03-11",
+      "name": "[parameters('dataCollectionRuleName')]",
+      "location": "[resourceGroup().location]",
+      "tags": "[parameters('tags')]",
+      "kind": "Direct",
+      "properties": {
+        "streamDeclarations": {
+          "[format('{0}', variables('printerHealthStreamName'))]": {
+            "columns": [
+              {
+                "name": "TimeGenerated",
+                "type": "datetime"
+              },
+              {
+                "name": "PrinterId",
+                "type": "string"
+              },
+              {
+                "name": "PrinterName",
+                "type": "string"
+              },
+              {
+                "name": "LocationInfo",
+                "type": "dynamic"
+              },
+              {
+                "name": "PrinterDetails",
+                "type": "dynamic"
+              },
+              {
+                "name": "PrinterStatusDetails",
+                "type": "dynamic"
+              }
+            ]
+          },
+          "[format('{0}', variables('printJobStreamName'))]": {
+            "columns": [
+              {
+                "name": "TimeGenerated",
+                "type": "datetime"
+              },
+              {
+                "name": "JobLifecycleEvent",
+                "type": "string"
+              },
+              {
+                "name": "JobId",
+                "type": "string"
+              },
+              {
+                "name": "PrinterShareId",
+                "type": "string"
+              },
+              {
+                "name": "PrinterShareName",
+                "type": "string"
+              },
+              {
+                "name": "PrinterId",
+                "type": "string"
+              },
+              {
+                "name": "PrinterName",
+                "type": "string"
+              },
+              {
+                "name": "CreatedBy",
+                "type": "string"
+              },
+              {
+                "name": "CreatedDateTime",
+                "type": "datetime"
+              },
+              {
+                "name": "JobState",
+                "type": "string"
+              },
+              {
+                "name": "DocumentSizeInBytes",
+                "type": "long"
+              },
+              {
+                "name": "ReadyForPrinterDateTime",
+                "type": "datetime"
+              },
+              {
+                "name": "CompletedDateTime",
+                "type": "datetime"
+              },
+              {
+                "name": "Details",
+                "type": "dynamic"
+              }
+            ]
+          },
+          "[format('{0}', variables('billingSummaryStreamName'))]": {
+            "columns": [
+              {
+                "name": "TimeGenerated",
+                "type": "datetime"
+              },
+              {
+                "name": "UsedPrintJobCount",
+                "type": "int"
+              },
+              {
+                "name": "IncludedPrintJobCount",
+                "type": "int"
+              },
+              {
+                "name": "BillingPeriodStartDateTime",
+                "type": "datetime"
+              },
+              {
+                "name": "BillingPeriodEndDateTime",
+                "type": "datetime"
+              }
+            ]
+          }
+        },
+        "destinations": {
+          "logAnalytics": [
+            {
+              "workspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]",
+              "name": "upworkspace"
+            }
+          ]
+        },
+        "dataFlows": [
+          {
+            "streams": [
+              "[variables('printerHealthStreamName')]"
+            ],
+            "destinations": [
+              "upworkspace"
+            ],
+            "transformKql": "source",
+            "outputStream": "[format('Custom-{0}', variables('printerHealthTableName'))]"
+          },
+          {
+            "streams": [
+              "[variables('printJobStreamName')]"
+            ],
+            "destinations": [
+              "upworkspace"
+            ],
+            "transformKql": "source",
+            "outputStream": "[format('Custom-{0}', variables('printJobTableName'))]"
+          },
+          {
+            "streams": [
+              "[variables('billingSummaryStreamName')]"
+            ],
+            "destinations": [
+              "upworkspace"
+            ],
+            "transformKql": "source",
+            "outputStream": "[format('Custom-{0}', variables('billingSummaryTableName'))]"
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('logAnalyticsWorkspaceName'), variables('billingSummaryTableName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('logAnalyticsWorkspaceName'), variables('printerHealthTableName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/tables', parameters('logAnalyticsWorkspaceName'), variables('printJobTableName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Insights/dataCollectionRules/{0}', parameters('dataCollectionRuleName'))]",
+      "name": "[guid(resourceId('Microsoft.Insights/dataCollectionRules', parameters('dataCollectionRuleName')), parameters('universalPrintServicePrincipalObjectId'), variables('monitoringMetricsPublisherRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('monitoringMetricsPublisherRoleId'))]",
+        "principalId": "[parameters('universalPrintServicePrincipalObjectId')]",
+        "principalType": "ServicePrincipal",
+        "description": "Allows Universal Print service to ingest data into this DCR"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/dataCollectionRules', parameters('dataCollectionRuleName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Insights/dataCollectionRules/{0}', parameters('dataCollectionRuleName'))]",
+      "name": "[guid(resourceId('Microsoft.Insights/dataCollectionRules', parameters('dataCollectionRuleName')), parameters('universalPrintServicePrincipalObjectId'), variables('monitoringContributorRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('monitoringContributorRoleId'))]",
+        "principalId": "[parameters('universalPrintServicePrincipalObjectId')]",
+        "principalType": "ServicePrincipal",
+        "description": "Allows Universal Print service to update DCR streams and data flows"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/dataCollectionRules', parameters('dataCollectionRuleName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.OperationalInsights/workspaces/{0}', parameters('logAnalyticsWorkspaceName'))]",
+      "name": "[guid(resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName')), parameters('universalPrintServicePrincipalObjectId'), variables('logAnalyticsContributorRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('logAnalyticsContributorRoleId'))]",
+        "principalId": "[parameters('universalPrintServicePrincipalObjectId')]",
+        "principalType": "ServicePrincipal",
+        "description": "Allows Universal Print service to manage custom table schemas"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('logAnalyticsWorkspaceName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "subscriptionName": {
+      "type": "string",
+      "metadata": {
+        "description": "Subscription display name - select this in the Universal Print Admin Portal"
+      },
+      "value": "[subscription().displayName]"
+    },
+    "subscriptionId": {
+      "type": "string",
+      "metadata": {
+        "description": "Subscription ID"
+      },
+      "value": "[subscription().subscriptionId]"
+    },
+    "resourceGroupName": {
+      "type": "string",
+      "metadata": {
+        "description": "Resource group containing the Log Analytics workspace and data collection rule"
+      },
+      "value": "[resourceGroup().name]"
+    },
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Log Analytics Workspace name - select this in the Universal Print Admin Portal"
+      },
+      "value": "[parameters('logAnalyticsWorkspaceName')]"
+    },
+    "dcrName": {
+      "type": "string",
+      "metadata": {
+        "description": "Data Collection Rule name - select this in the Universal Print Admin Portal"
+      },
+      "value": "[parameters('dataCollectionRuleName')]"
+    },
+    "printerHealthTableName": {
+      "type": "string",
+      "metadata": {
+        "description": "Printer Health Table Name"
+      },
+      "value": "[variables('printerHealthTableName')]"
+    },
+    "printJobTableName": {
+      "type": "string",
+      "metadata": {
+        "description": "Print Job Table Name"
+      },
+      "value": "[variables('printJobTableName')]"
+    },
+    "billingSummaryTableName": {
+      "type": "string",
+      "metadata": {
+        "description": "Billing Summary Table Name"
+      },
+      "value": "[variables('billingSummaryTableName')]"
+    }
+  }
+}
