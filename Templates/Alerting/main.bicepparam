@@ -3,8 +3,6 @@ using 'main.bicep'
 // ============================================================================
 // Universal Print Alerting Infrastructure - Parameters
 // ============================================================================
-// Schema Version: 0.3.0 - Aligned with PowerShell scripts
-// ============================================================================
 
 // Required: Log Analytics Workspace name (creates new or reuses existing)
 param logAnalyticsWorkspaceName = 'law-universalprint'
@@ -17,7 +15,7 @@ param logAnalyticsWorkspaceName = 'law-universalprint'
 //   az ad sp show --id da9b70f6-5323-4ce6-ae5c-88dcc5082966 --query id -o tsv
 param universalPrintServicePrincipalObjectId = '<your-service-principal-object-id>'
 
-// Optional: DCR name (defaults to dcrup-{workspace}, max 30 chars)
+// Optional: DCR name (defaults to dcrup-<workspace-name>, max 30 chars)
 // Uncomment to override:
 // param dataCollectionRuleName = 'dcrup-custom'
 
