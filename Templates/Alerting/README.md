@@ -180,3 +180,4 @@ The full walkthrough — including sample alert queries — is in the
 - [Set up Universal Print Logs and Alerting (Preview)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting)
 - [Log Analytics workspace overview](https://learn.microsoft.com/azure/azure-monitor/logs/log-analytics-workspace-overview)
 - [Azure Monitor Data Collection Rules](https://learn.microsoft.com/azure/azure-monitor/essentials/data-collection-rule-overview)
+- [PowerShell scripts (Alerting)](../../Scripts/Alerting/README.md) — scripted deployment alternative.
