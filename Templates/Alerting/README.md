@@ -96,20 +96,14 @@ az deployment group create \
 
 ## Resource group
 
-Every resource these templates create — the Log Analytics workspace, the custom tables, the
-Data Collection Rule, and the RBAC role assignments — is deployed into the **single resource
-group** you pass with `--resource-group`. The deployment is *resource-group-scoped*
-(`az deployment group create`), so there is no per-resource resource-group parameter.
+> **Single resource group (by design).** All resources — the Log Analytics workspace, custom
+> tables, Data Collection Rule, and RBAC role assignments — deploy into the **single resource
+> group** you pass with `--resource-group`, matching the PowerShell scripts. The deployment is
+> resource-group-scoped, so there's no per-resource group parameter.
 
-> **Single resource group (by design).** Every alerting resource — the workspace, the custom
-> tables, the Data Collection Rule, and the RBAC role assignments — lives in **one resource
-> group** across all deployment methods (Bicep, ARM, and the PowerShell scripts). Splitting the
-> DCR into a separate group would require a subscription-scoped deployment with nested modules —
-> complexity the toolkit deliberately avoids.
-
-The target resource group must exist before you deploy (or create it with
-`az group create`, as shown in [Deploy](#deploy)). Its name is surfaced in the
-`resourceGroupName` [output](#outputs) for use in the Universal Print Admin Portal dropdowns.
+The target resource group must exist before you deploy (or create it with `az group create`, as
+shown in [Deploy](#deploy)). Its name appears in the `resourceGroupName` [output](#outputs) for the
+Universal Print Admin Portal dropdowns.
 
 ## Sovereign cloud support
 
