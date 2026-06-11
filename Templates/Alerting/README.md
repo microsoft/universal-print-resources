@@ -165,13 +165,6 @@ Enable the log categories you want: **Printer activity**, **Job activity**, **Bi
 The full walkthrough — including sample alert queries — is in the
 [Get-Started guide](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting).
 
-## Cleanup
-
-Bicep/ARM templates only **provision** resources — they have no native way to delete them.
-Use the PowerShell cleanup script published in the
-[`Scripts/Alerting/`](https://github.com/microsoft/universal-print-resources/tree/main/Scripts/Alerting) folder
-(see [Clean up Universal Print Logs and Alerting (Preview)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/clean-up-logs-and-alerting) for the full workflow). There is no cleanup template.
-
 ## Troubleshooting
 
 | Symptom | Cause / fix |
