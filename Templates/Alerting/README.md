@@ -1,12 +1,14 @@
-# Universal Print — Logs and Alerts Templates (Alerting)
+# Universal Print — Logs and Alerting (Preview): Bicep/ARM templates
 
 Infrastructure-as-Code **templates** that provision the Azure Monitor resources required by the
-**Universal Print Logs and Alerts** feature. Use these when you prefer a declarative, repeatable
-deployment (Bicep or ARM) over the imperative PowerShell setup script.
+**Universal Print Logs and Alerting (Preview)** feature. Use these when you prefer a declarative,
+repeatable deployment (Bicep or ARM) over the imperative PowerShell setup script.
 
-> 📘 **Start here:** For end-to-end, step-by-step guidance (permissions, finding the service
-> principal Object ID, portal configuration, and sample alert queries), see the
-> **Get-Started guide**: [Set up Logs and Alerts for Universal Print](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting).
+> 📘 **Start here:** This README is a parameter/file reference for the templates in this folder.
+> For the end-to-end walkthrough (permissions, finding the service principal Object ID, portal
+> configuration, and sample alert queries), use the Microsoft Learn articles:
+> [Set up Universal Print Logs and Alerting (Preview)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting)
+> and [Clean up Universal Print Logs and Alerting (Preview)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/clean-up-logs-and-alerting).
 
 ## What's in this folder
 
@@ -17,8 +19,7 @@ deployment (Bicep or ARM) over the imperative PowerShell setup script.
 | `azuredeploy.json` | The ARM template, compiled from `main.bicep`. Functionally identical — use it if your toolchain is ARM-based or for **Deploy to Azure** portal flows. | Deploy with `az deployment group create --template-file azuredeploy.json`. |
 | `metadata.json` | Azure Quickstart-style metadata (display name, description, services). Used by gallery/quickstart tooling; not required for a manual deployment. | No action needed — informational. |
 
-> **Schema version:** 0.3.0 — kept in sync with the PowerShell setup script. All deployment
-> methods (Bicep, ARM, PowerShell) create identical resources with the same table schemas.
+> **All deployment methods (PowerShell, Bicep, ARM) create identical resources with the same table schemas.**
 
 ## Resources created
 
@@ -95,22 +96,14 @@ az deployment group create \
 
 ## Resource group
 
-Every resource these templates create — the Log Analytics workspace, the custom tables, the
-Data Collection Rule, and the RBAC role assignments — is deployed into the **single resource
-group** you pass with `--resource-group`. The deployment is *resource-group-scoped*
-(`az deployment group create`), so there is no per-resource resource-group parameter.
+> **Single resource group (by design).** All resources — the Log Analytics workspace, custom
+> tables, Data Collection Rule, and RBAC role assignments — deploy into the **single resource
+> group** you pass with `--resource-group`, matching the PowerShell scripts. The deployment is
+> resource-group-scoped, so there's no per-resource group parameter.
 
-> **No separate DCR resource group (by design).** The PowerShell setup script exposes an
-> `-AzDcrResourceGroup` parameter that can place the Data Collection Rule in a *different*
-> resource group than the workspace. The templates intentionally omit this: keeping every
-> resource in one resource group is what makes a resource-group-scoped deployment simple and
-> repeatable. Splitting the DCR into another group would require a subscription-scoped
-> deployment with nested modules — complexity the templates deliberately avoid. If you need the
-> DCR in a separate resource group, use the PowerShell script instead.
-
-The target resource group must exist before you deploy (or create it with
-`az group create`, as shown in [Deploy](#deploy)). Its name is surfaced in the
-`resourceGroupName` [output](#outputs) for use in the Universal Print Admin Portal dropdowns.
+The target resource group must exist before you deploy (or create it with `az group create`, as
+shown in [Deploy](#deploy)). Its name appears in the `resourceGroupName` [output](#outputs) for the
+Universal Print Admin Portal dropdowns.
 
 ## Sovereign cloud support
 
@@ -143,7 +136,7 @@ az deployment group create \
 |-----------|------|---------|-------------|
 | `logAnalyticsWorkspaceName` | string | *required* | Log Analytics workspace name (creates new or reuses existing). |
 | `universalPrintServicePrincipalObjectId` | string | *required* | UP service principal Object ID for RBAC. |
-| `dataCollectionRuleName` | string | `dcrup-{workspace}` | DCR name (3–30 chars, letters/numbers/hyphens). |
+| `dataCollectionRuleName` | string | `dcrup-<workspace-name>` | DCR name (3–30 chars, letters/numbers/hyphens). |
 | `printJobRetentionInDays` | int | 30 | Interactive retention for the print job table / hot storage (30–730 days). |
 | `printJobTotalRetentionInDays` | int | 365 | Total retention including archive (must be ≥ `printJobRetentionInDays`, 30–2556 days). |
 | `tags` | object | `{purpose: 'Universal Print Alerting', deployedBy: 'Bicep'}` | Resource tags. |
@@ -172,13 +165,6 @@ Enable the log categories you want: **Printer activity**, **Job activity**, **Bi
 The full walkthrough — including sample alert queries — is in the
 [Get-Started guide](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting).
 
-## Cleanup
-
-Bicep/ARM templates only **provision** resources — they have no native way to delete them.
-Use the PowerShell cleanup script published in the
-[`Scripts/Alerting/`](https://github.com/microsoft/universal-print-resources/tree/main/Scripts/Alerting) folder
-(see the Get-Started guide for details). There is no cleanup template.
-
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -191,5 +177,7 @@ Use the PowerShell cleanup script published in the
 ## Resources
 
 - [Universal Print documentation](https://learn.microsoft.com/universal-print/)
+- [Set up Universal Print Logs and Alerting (Preview)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting)
+- [Log Analytics workspace overview](https://learn.microsoft.com/azure/azure-monitor/logs/log-analytics-workspace-overview)
 - [Azure Monitor Data Collection Rules](https://learn.microsoft.com/azure/azure-monitor/essentials/data-collection-rule-overview)
-- [Set up Logs and Alerts for Universal Print (Get-Started)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting)
+- [PowerShell scripts (Alerting)](../../Scripts/Alerting/README.md) — scripted deployment alternative.

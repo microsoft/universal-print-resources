@@ -1,15 +1,14 @@
 // ============================================================================
 // Universal Print Alerting Infrastructure
 // ============================================================================
-// This template deploys the Azure Monitor infrastructure required for 
+// This template deploys the Azure Monitor infrastructure required for
 // Universal Print printer health, print job, and billing summary logging.
 //
 // Resources created:
 // - Log Analytics Workspace
-// - Data Collection Rule (DCR) with kind: Direct and custom log tables
-// - RBAC role assignment for Universal Print service principal
-//
-// Schema Version: 0.3.0
+// - Three custom log tables (printer health, print job, billing summary)
+// - Data Collection Rule (DCR) with kind: Direct
+// - RBAC role assignments for the Universal Print service principal
 // ============================================================================
 
 // ============================================================================
@@ -34,7 +33,7 @@ param printJobRetentionInDays int = 30
 @maxValue(2556)
 param printJobTotalRetentionInDays int = 365
 
-@description('Universal Print service principal Object ID. Required for RBAC role assignments that allow data ingestion. Get this value by running: az ad sp show --id da9b70f6-5323-4ce6-ae5c-88dcc5082966 --query id -o tsv (or see Step 2 of the Logs and Alerts setup guide).')
+@description('Universal Print service principal Object ID. Required for RBAC role assignments that allow data ingestion. Get this value by running: az ad sp show --id da9b70f6-5323-4ce6-ae5c-88dcc5082966 --query id -o tsv (or see Step 2 of the Logs and Alerting setup guide).')
 param universalPrintServicePrincipalObjectId string
 
 @description('Tags to apply to all resources.')
@@ -86,7 +85,7 @@ resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10
 // Custom Log Tables - Schema aligned with PowerShell scripts
 // ============================================================================
 
-// PrinterHealthInformation_CL - Stores printer health events
+// UniversalPrintPrinterHealth_CL - Stores printer health events
 resource printerHealthTable 'Microsoft.OperationalInsights/workspaces/tables@2022-10-01' = {
   parent: logAnalyticsWorkspace
   name: printerHealthTableName
@@ -130,7 +129,7 @@ resource printerHealthTable 'Microsoft.OperationalInsights/workspaces/tables@202
   }
 }
 
-// PrintJob_CL - Stores print job events
+// UniversalPrintJob_CL - Stores print job events
 resource printJobTable 'Microsoft.OperationalInsights/workspaces/tables@2022-10-01' = {
   parent: logAnalyticsWorkspace
   name: printJobTableName
@@ -216,7 +215,7 @@ resource printJobTable 'Microsoft.OperationalInsights/workspaces/tables@2022-10-
   }
 }
 
-// BillingSummary_CL- Stores billing summary events
+// UniversalPrintBillingSummary_CL - Stores billing summary events
 resource billingSummaryTable 'Microsoft.OperationalInsights/workspaces/tables@2022-10-01' = {
   parent: logAnalyticsWorkspace
   name: billingSummaryTableName

@@ -1,12 +1,15 @@
-# Universal Print — Logs and Alerts Scripts (Alerting)
+# Universal Print — Logs and Alerting (Preview): PowerShell scripts
 
 PowerShell **scripts** that provision and tear down the Azure Monitor resources required by the
-**Universal Print Logs and Alerts** feature. Use these when you prefer an imperative, step-by-step
-setup (with retry logic and detailed progress output) over the declarative Bicep/ARM templates.
+**Universal Print Logs and Alerting (Preview)** feature. Use these when you prefer an imperative,
+step-by-step setup (with retry logic and detailed progress output) over the declarative Bicep/ARM
+templates.
 
-> 📘 **Start here:** For end-to-end, step-by-step guidance (permissions, finding the service
-> principal Object ID, portal configuration, and sample alert queries), see the
-> **Get-Started guide**: [Set up Logs and Alerts for Universal Print](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting).
+> 📘 **Start here:** This README is a parameter/file reference for the scripts in this folder. For
+> the end-to-end walkthrough (permissions, finding the service principal Object ID, portal
+> configuration, and sample alert queries), use the Microsoft Learn articles:
+> [Set up Universal Print Logs and Alerting (Preview)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting)
+> and [Clean up Universal Print Logs and Alerting (Preview)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/clean-up-logs-and-alerting).
 
 > ⚠️ **Required Permissions (Azure RBAC)** — on the target resource group, **either**:
 >
@@ -27,8 +30,7 @@ setup (with retry logic and detailed progress output) over the declarative Bicep
 | `Setup-AlertingInfrastructure.ps1` | Creates the Log Analytics workspace, the three custom tables, the Data Collection Rule (with built-in ingestion endpoint), and assigns the RBAC roles for the Universal Print service principal. | Run with the parameters shown in [Quick start](#quick-start). Idempotent — safe to re-run. |
 | `Cleanup-AlertingInfrastructure.ps1` | Removes the alerting resources created by setup (optionally the resource group too). | Run when you want to tear everything down. |
 
-> **Schema version:** 0.3.0 — kept in sync with the Bicep/ARM templates. All deployment methods
-> (PowerShell, Bicep, ARM) create identical resources with the same table schemas.
+> **All deployment methods (PowerShell, Bicep, ARM) create identical resources with the same table schemas.**
 
 ## Resources created
 
@@ -54,6 +56,10 @@ setup (with retry logic and detailed progress output) over the declarative Bicep
                                           │ - UniversalPrintBillingSummary_CL │
                                           └───────────────────────────────────┘
 ```
+
+> **Single resource group (by design).** Every resource above — the workspace, custom tables,
+> DCR, and role assignments — is created in the **single resource group** you pass with
+> `-LogAnalyticsResourceGroup`. This matches the resource-group-scoped Bicep/ARM templates.
 
 ## Prerequisites
 
@@ -116,8 +122,7 @@ See [Get-Started guide](https://learn.microsoft.com/universal-print/reference/lo
 | `LogAnalyticsLocation` | Yes | — | Azure region (e.g., `westus2`). |
 | `LogAnalyticsResourceGroup` | Yes | — | Resource group name (created if missing). |
 | `LogAnalyticsWorkspaceName` | Yes | — | Log Analytics workspace name (created or reused). |
-| `AzDcrResourceGroup` | No | `LogAnalyticsResourceGroup` | Resource group for the Data Collection Rule (created if missing). Set this to place the DCR in a different resource group than the workspace. |
-| `AzDcrName` | No | `dcrup-{workspace}` | Data Collection Rule name (truncated to 30 chars). |
+| `AzDcrName` | No | `dcrup-<workspace-name>` | Data Collection Rule name (truncated to 30 chars). |
 | `UniversalPrintServicePrincipalObjectId` | No | auto-resolved | UP service principal Object ID for RBAC; resolved via Graph if omitted. |
 | `PrintJobRetentionInDays` | No | 30 | Interactive retention for the print job table (30–730 days). |
 | `PrintJobTotalRetentionInDays` | No | 365 | Total retention including archive (≥ `PrintJobRetentionInDays`, 30–2556 days). |
@@ -131,8 +136,7 @@ See [Get-Started guide](https://learn.microsoft.com/universal-print/reference/lo
 | `SubscriptionId` | Yes | — | Subscription ID of the resources. |
 | `ResourceGroupName` | Yes | — | Resource group holding the alerting resources. |
 | `WorkspaceName` | Yes | — | Log Analytics workspace to remove. |
-| `DcrResourceGroupName` | No | `ResourceGroupName` | Resource group holding the Data Collection Rule, if different from `ResourceGroupName`. |
-| `DcrName` | No | `dcrup-<workspace>` | Data Collection Rule to remove. |
+| `DcrName` | No | `dcrup-<workspace-name>` | Data Collection Rule to remove. |
 | `DeleteTables` | No | (off) | Delete the custom log tables (**deletes all log data**). |
 | `DeleteWorkspace` | No | (off) | Delete the entire Log Analytics workspace. |
 | `DeleteResourceGroup` | No | (off) | Also delete the resource group. |
@@ -149,9 +153,9 @@ Both scripts support the `-AzureEnvironment` parameter:
 
 | Value | Clouds |
 |-------|--------|
-| `AzureCloud` (default) | Public, GCC |
-| `AzureUSGovernment` | GCC High, DOD |
-| `AzureChinaCloud` | China (21Vianet) |
+| `AzureCloud` (default) | Azure Public (Commercial, GCC) |
+| `AzureUSGovernment` | Azure US Government (GCC High, DoD) |
+| `AzureChinaCloud` | Azure China (21Vianet) |
 
 ```powershell
 # Example: GCC High
@@ -169,7 +173,10 @@ want: **Printer activity**, **Job activity**, **Billing event**.
 The full walkthrough — including sample alert queries — is in the
 [Get-Started guide](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting).
 
-## See Also
+## Resources
 
-- [Bicep/ARM Templates (Alerting)](../../Templates/Alerting/README.md) — declarative deployment alternative.
 - [Universal Print documentation](https://learn.microsoft.com/universal-print/)
+- [Set up Universal Print Logs and Alerting (Preview)](https://learn.microsoft.com/universal-print/reference/logs-and-alerting/set-up-logs-and-alerting)
+- [Log Analytics workspace overview](https://learn.microsoft.com/azure/azure-monitor/logs/log-analytics-workspace-overview)
+- [Azure Monitor Data Collection Rules](https://learn.microsoft.com/azure/azure-monitor/essentials/data-collection-rule-overview)
+- [Bicep/ARM templates (Alerting)](../../Templates/Alerting/README.md) — declarative deployment alternative.
