@@ -30,8 +30,7 @@ templates.
 | `Setup-AlertingInfrastructure.ps1` | Creates the Log Analytics workspace, the three custom tables, the Data Collection Rule (with built-in ingestion endpoint), and assigns the RBAC roles for the Universal Print service principal. | Run with the parameters shown in [Quick start](#quick-start). Idempotent — safe to re-run. |
 | `Cleanup-AlertingInfrastructure.ps1` | Removes the alerting resources created by setup (optionally the resource group too). | Run when you want to tear everything down. |
 
-> **Schema version:** 0.3.0 — kept in sync with the Bicep/ARM templates. All deployment methods
-> (PowerShell, Bicep, ARM) create identical resources with the same table schemas.
+> **All deployment methods (PowerShell, Bicep, ARM) create identical resources with the same table schemas.**
 
 ## Resources created
 

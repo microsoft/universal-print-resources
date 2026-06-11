@@ -19,8 +19,7 @@ repeatable deployment (Bicep or ARM) over the imperative PowerShell setup script
 | `azuredeploy.json` | The ARM template, compiled from `main.bicep`. Functionally identical — use it if your toolchain is ARM-based or for **Deploy to Azure** portal flows. | Deploy with `az deployment group create --template-file azuredeploy.json`. |
 | `metadata.json` | Azure Quickstart-style metadata (display name, description, services). Used by gallery/quickstart tooling; not required for a manual deployment. | No action needed — informational. |
 
-> **Schema version:** 0.3.0 — kept in sync with the PowerShell setup script. All deployment
-> methods (Bicep, ARM, PowerShell) create identical resources with the same table schemas.
+> **All deployment methods (PowerShell, Bicep, ARM) create identical resources with the same table schemas.**
 
 ## Resources created
 
