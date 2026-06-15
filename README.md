@@ -2,7 +2,11 @@
 
 ## Purpose of this repo
 
-This repo is intended for the Universal Print team to share resources such as sample code and scripts that may be useful to developers and administrators.
+This repo is intended for the Universal Print team to share resources that may be useful to developers and administrators, including:
+
+- **Sample scripts** that demonstrate how to automate common Universal Print tasks (see the [`Scripts`](Scripts) folder).
+- **Deployment templates** for setting up related Azure infrastructure (see the [`Templates`](Templates) folder).
+- **Troubleshooting scripts** that help diagnose issues, such as [`PrintTrace.cmd`](PrintTrace.cmd) for collecting print traces.
 
 The Universal Print team does not make any commitments to the frequency of updating these resources or to responding to issues reported about them.
 
