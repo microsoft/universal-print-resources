@@ -57,6 +57,7 @@ public class Program
 
         string printerId= string.Empty;
         string shareId = string.Empty;
+        string badgeCollectionId = string.Empty;
         string createdBadgeId = string.Empty;
         string? savedDocumentPath = null;
 
@@ -103,8 +104,8 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", "Creating badge collection...");
             token = await auth.GetUserTokenAsync();
-            var collectionId = await badgeMgmt.CreateBadgeCollectionAsync(token);
-            ConsoleHelper.WriteSuccess($"Badge collection ready (ID: {collectionId}).");
+            badgeCollectionId = await badgeMgmt.CreateBadgeCollectionAsync(token);
+            ConsoleHelper.WriteSuccess($"Badge collection ready (ID: {badgeCollectionId}).");
 
             // ═══════════════════════════════════════════════════════════
             // Step 5: Prompt for badge ID and create badge
@@ -124,7 +125,7 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", $"Adding badge '{badgeId}' → {auth.UserUpn}");
             token = await auth.GetUserTokenAsync();
-            await badgeMgmt.AddBadgeAsync(token, badgeId, auth.UserUpn);
+            await badgeMgmt.AddBadgeAsync(token, badgeCollectionId, badgeId, auth.UserUpn);
             createdBadgeId = badgeId;
             ConsoleHelper.WriteSuccess($"Badge '{badgeId}' mapped to {auth.UserUpn}.");
 
@@ -336,11 +337,11 @@ public class Program
                         }
                     }
 
-                    if (!string.IsNullOrEmpty(createdBadgeId))
+                    if (!string.IsNullOrEmpty(createdBadgeId) && !string.IsNullOrEmpty(badgeCollectionId))
                     {
                         ConsoleHelper.WriteProgress($"Deleting badge '{createdBadgeId}'...");
                         var printToken = await auth.GetUserTokenAsync();
-                        await badgeMgmt.DeleteBadgeAsync(printToken, createdBadgeId);
+                        await badgeMgmt.DeleteBadgeAsync(printToken, badgeCollectionId, createdBadgeId);
                         ConsoleHelper.WriteSuccess("Badge deleted.");
                     }
 

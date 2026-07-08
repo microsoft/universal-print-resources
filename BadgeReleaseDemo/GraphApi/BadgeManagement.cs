@@ -15,7 +15,6 @@ namespace BadgeReleaseDemo.GraphApi;
 /// </summary>
 public class BadgeManagement
 {
-    private const string SingleCollectionId = "0";
     private readonly string graphBaseUrl;
     private readonly HttpClient httpClient;
 
@@ -27,7 +26,7 @@ public class BadgeManagement
 
     /// <summary>
     /// Creates a badge collection. Handles 409 Conflict if it already exists.
-    /// Returns the collection ID (always "0").
+    /// Returns the actual collection ID from the service.
     /// </summary>
     public async Task<string> CreateBadgeCollectionAsync(string accessToken)
     {
@@ -40,7 +39,7 @@ public class BadgeManagement
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
             ConsoleHelper.WriteInfo("Badge collection already exists (this is OK).");
-            return SingleCollectionId;
+            return await GetBadgeCollectionIdAsync(accessToken);
         }
 
         if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Accepted)
@@ -54,13 +53,13 @@ public class BadgeManagement
         if (response.StatusCode == HttpStatusCode.Accepted)
         {
             ConsoleHelper.WriteProgress("Waiting for badge collection to be provisioned (this can take up to 10 minutes)...");
-            await WaitForBadgeCollectionProvisioningAsync(accessToken);
+            return await WaitForBadgeCollectionProvisioningAsync(accessToken);
         }
 
-        return SingleCollectionId;
+        return await GetBadgeCollectionIdAsync(accessToken);
     }
 
-    private async Task WaitForBadgeCollectionProvisioningAsync(string accessToken)
+    private async Task<string> WaitForBadgeCollectionProvisioningAsync(string accessToken)
     {
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
@@ -69,19 +68,11 @@ public class BadgeManagement
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            var response = await httpClient.GetAsync($"{graphBaseUrl}/print/badgeCollections/{SingleCollectionId}");
+            var collectionId = await TryGetBadgeCollectionIdAsync(accessToken);
 
-            if (response.IsSuccessStatusCode)
+            if (!string.IsNullOrEmpty(collectionId))
             {
-                return;
-            }
-
-            var responseBody = await response.Content.ReadAsStringAsync();
-
-            if (response.StatusCode != HttpStatusCode.NotFound)
-            {
-                throw new HttpRequestException(
-                    $"Failed while waiting for badge collection provisioning: {response.StatusCode} - {responseBody}");
+                return collectionId;
             }
 
             if (attempt < maxAttempts)
@@ -93,10 +84,55 @@ public class BadgeManagement
         throw new TimeoutException("Timed out waiting for badge collection provisioning to complete.");
     }
 
+    private async Task<string> GetBadgeCollectionIdAsync(string accessToken)
+    {
+        var collectionId = await TryGetBadgeCollectionIdAsync(accessToken);
+        return collectionId ?? throw new InvalidOperationException("No badge collection ID was returned by the service.");
+    }
+
+    private async Task<string?> TryGetBadgeCollectionIdAsync(string accessToken)
+    {
+        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        var response = await httpClient.GetAsync($"{graphBaseUrl}/print/badgeCollections");
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Failed to list badge collections: {response.StatusCode} - {responseBody}");
+        }
+
+        var listDoc = JsonSerializer.Deserialize<JsonElement>(responseBody);
+        if (!listDoc.TryGetProperty("value", out var collections) || collections.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException("Badge collections response did not include a valid value array.");
+        }
+
+        foreach (var collection in collections.EnumerateArray())
+        {
+            if (collection.TryGetProperty("id", out var idProperty))
+            {
+                var collectionId = idProperty.GetString();
+                if (!string.IsNullOrWhiteSpace(collectionId))
+                {
+                    return collectionId;
+                }
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Adds a badge to the collection with the given badge ID and user UPN.
     /// </summary>
-    public async Task AddBadgeAsync(string accessToken, string badgeId, string upn)
+    public async Task AddBadgeAsync(string accessToken, string collectionId, string badgeId, string upn)
     {
         httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
@@ -110,14 +146,14 @@ public class BadgeManagement
         var content = new StringContent(json, Encoding.UTF8, "application/json");
 
         var response = await httpClient.PostAsync(
-            $"{graphBaseUrl}/print/badgeCollections/{SingleCollectionId}/badges",
+            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges",
             content);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
             ConsoleHelper.WriteInfo($"Badge '{badgeId}' already exists. Updating...");
-            await UpdateBadgeAsync(accessToken, badgeId, upn);
+            await UpdateBadgeAsync(accessToken, collectionId, badgeId, upn);
             return;
         }
 
@@ -130,12 +166,12 @@ public class BadgeManagement
     /// <summary>
     /// Updates an existing badge's UPN.
     /// </summary>
-    private async Task UpdateBadgeAsync(string accessToken, string badgeId, string upn)
+    private async Task UpdateBadgeAsync(string accessToken, string collectionId, string badgeId, string upn)
     {
         var requestBody = new { upn };
         var json = JsonSerializer.Serialize(requestBody);
         var request = new HttpRequestMessage(HttpMethod.Patch,
-            $"{graphBaseUrl}/print/badgeCollections/{SingleCollectionId}/badges/{badgeId}")
+            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges/{badgeId}")
         {
             Content = new StringContent(json, Encoding.UTF8, "application/json")
         };
@@ -153,10 +189,10 @@ public class BadgeManagement
     /// <summary>
     /// Deletes a badge from the collection.
     /// </summary>
-    public async Task DeleteBadgeAsync(string accessToken, string badgeId)
+    public async Task DeleteBadgeAsync(string accessToken, string collectionId, string badgeId)
     {
         using var request = new HttpRequestMessage(HttpMethod.Delete,
-            $"{graphBaseUrl}/print/badgeCollections/{SingleCollectionId}/badges/{badgeId}");
+            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges/{badgeId}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
         var response = await httpClient.SendAsync(request);
