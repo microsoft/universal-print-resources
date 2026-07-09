@@ -227,12 +227,12 @@ public class AuthHelper
             { "x5c", new[] { certBase64 } },
         };
 
-        // Use the app's client_id and the standard native client redirect URI
+        // Use the app's client_id and the configured desktop redirect URI.
         var clientId = string.IsNullOrEmpty(registrationResult!.PrinterClientId)
             ? appId
             : registrationResult.PrinterClientId;
         var redirectUri = string.IsNullOrEmpty(registrationResult.PrinterRedirectUri)
-            ? "https://login.microsoftonline.com/common/oauth2/nativeclient"
+            ? "http://localhost"
             : registrationResult.PrinterRedirectUri;
 
         var claims = new[]

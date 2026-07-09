@@ -115,27 +115,39 @@ public class PrintJobSubmission
     }
 
     /// <summary>
-    /// Uploads a PDF document to the upload session.
+    /// Uploads a PDF document to the upload session in chunks smaller than 10 MB.
     /// </summary>
-    public async Task UploadDocumentAsync(string accessToken, string uploadUrl, byte[] pdfData)
+    public async Task UploadDocumentAsync(string uploadUrl, byte[] pdfData)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        // Universal Print upload sessions require each PUT to be less than 10 MB.
+        const int maxChunkSizeBytes = 9 * 1024 * 1024;
+        var totalLength = pdfData.Length;
+        var offset = 0;
 
-        request.Content = new ByteArrayContent(pdfData);
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
-        request.Content.Headers.ContentLength = pdfData.Length;
-        request.Content.Headers.Add("Content-Range", $"bytes 0-{pdfData.Length - 1}/{pdfData.Length}");
-
-        var response = await httpClient.SendAsync(request);
-        var responseBody = await response.Content.ReadAsStringAsync();
-
-        if (!response.IsSuccessStatusCode)
+        while (offset < totalLength)
         {
-            throw new HttpRequestException($"Failed to upload document: {response.StatusCode} - {responseBody}");
+            var chunkLength = Math.Min(maxChunkSizeBytes, totalLength - offset);
+            var rangeStart = offset;
+            var rangeEnd = offset + chunkLength - 1;
+
+            using var request = new HttpRequestMessage(HttpMethod.Put, uploadUrl);
+            request.Content = new ByteArrayContent(pdfData, offset, chunkLength);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+            request.Content.Headers.ContentLength = chunkLength;
+            request.Content.Headers.Add("Content-Range", $"bytes {rangeStart}-{rangeEnd}/{totalLength}");
+
+            var response = await httpClient.SendAsync(request);
+            var responseBody = await response.Content.ReadAsStringAsync();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException($"Failed to upload document range {rangeStart}-{rangeEnd}: {response.StatusCode} - {responseBody}");
+            }
+
+            offset += chunkLength;
         }
 
-        ConsoleHelper.WriteInfo($"Uploaded {pdfData.Length} bytes.");
+        ConsoleHelper.WriteInfo($"Uploaded {totalLength} bytes.");
     }
 
     /// <summary>
@@ -143,12 +155,12 @@ public class PrintJobSubmission
     /// </summary>
     public async Task StartJobAsync(string accessToken, string shareId, string jobId)
     {
-        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var request = new HttpRequestMessage(HttpMethod.Post,
+            $"{graphBaseUrl}/print/shares/{shareId}/jobs/{jobId}/start");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
 
-        var content = new StringContent("{}", Encoding.UTF8, "application/json");
-
-        var response = await httpClient.PostAsync(
-            $"{graphBaseUrl}/print/shares/{shareId}/jobs/{jobId}/start", content);
+        var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)

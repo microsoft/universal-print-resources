@@ -166,7 +166,7 @@ public class Program
             ConsoleHelper.WriteProgress("Uploading document...");
             var pdfData = await File.ReadAllBytesAsync(pdfPath);
             var uploadUrl = await jobSubmission.CreateUploadSessionAsync(graphToken, shareId, jobId, documentId, pdfData.Length);
-            await jobSubmission.UploadDocumentAsync(graphToken, uploadUrl, pdfData);
+            await jobSubmission.UploadDocumentAsync(uploadUrl, pdfData);
 
             // Start the job
             await jobSubmission.StartJobAsync(graphToken, shareId, jobId);
@@ -237,8 +237,47 @@ public class Program
                 return;
             }
 
-            resolvedJobId = jobs[0].JobId;
-            resolvedJobUri = jobs[0].JobUri;
+            var selectedJob = jobs[0];
+            if (int.TryParse(jobId, out var submittedJobId))
+            {
+                var attemptsRemaining = 6;
+                while (true)
+                {
+                    bool found = false;
+                    foreach (var candidate in jobs)
+                    {
+                        if (candidate.JobId == submittedJobId)
+                        {
+                            selectedJob = candidate;
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (found)
+                    {
+                        break;
+                    }
+
+                    attemptsRemaining--;
+                    if (attemptsRemaining <= 0)
+                    {
+                        ConsoleHelper.WriteError($"Submitted job {submittedJobId} was not found in fetchable jobs.");
+                        return;
+                    }
+
+                    ConsoleHelper.WriteInfo($"Submitted job {submittedJobId} not fetchable yet. Polling again in 5 seconds...");
+                    await Task.Delay(TimeSpan.FromSeconds(5));
+                    jobs = await ippClient.GetJobsAsync(printerToken, printerId, resolvedUserUri!);
+                }
+            }
+            else
+            {
+                ConsoleHelper.WriteWarning($"Could not parse Graph job ID '{jobId}' as IPP integer. Using the first fetchable job.");
+            }
+
+            resolvedJobId = selectedJob.JobId;
+            resolvedJobUri = selectedJob.JobUri;
             ConsoleHelper.WriteSuccess($"Found {jobs.Count} fetchable job(s).");
             ConsoleHelper.WriteKeyValue("Fetching Job ID", resolvedJobId.ToString());
             if (!string.IsNullOrEmpty(resolvedJobUri))
@@ -250,7 +289,7 @@ public class Program
             // Step 11: Fetch-Job (get job metadata)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Printer: Fetching job metadata...");
-            var (fetchJobStatusCode, fetchJobAttrs, fetchJobDocStream) = await ippClient.FetchJobAsync(
+            var (fetchJobStatusCode, _, _) = await ippClient.FetchJobAsync(
                 printerToken, printerId, resolvedJobId, resolvedUserUri!);
 
             if (fetchJobStatusCode != 0x0000) // 0x0000 = successful-ok
@@ -327,52 +366,63 @@ public class Program
             {
                 ConsoleHelper.WriteHeader("🧹 Cleaning up demo resources...");
 
-                try
+                if (savedDocumentPath != null && File.Exists(savedDocumentPath))
                 {
-                    if (savedDocumentPath != null && File.Exists(savedDocumentPath))
+                    try
                     {
-                        try
-                        {
-                            ConsoleHelper.WriteProgress("Deleting downloaded document...");
-                            File.Delete(savedDocumentPath);
-                            ConsoleHelper.WriteSuccess("Document deleted.");
-                        }
-                        catch (IOException)
-                        {
-                            ConsoleHelper.WriteWarning($"Could not delete document (may be open in another app): {savedDocumentPath}");
-                        }
+                        ConsoleHelper.WriteProgress("Deleting downloaded document...");
+                        File.Delete(savedDocumentPath);
+                        ConsoleHelper.WriteSuccess("Document deleted.");
                     }
+                    catch (IOException)
+                    {
+                        ConsoleHelper.WriteWarning($"Could not delete document (may be open in another app): {savedDocumentPath}");
+                    }
+                }
 
-                    if (!string.IsNullOrEmpty(createdBadgeId) && !string.IsNullOrEmpty(badgeCollectionId))
+                if (!string.IsNullOrEmpty(createdBadgeId) && !string.IsNullOrEmpty(badgeCollectionId))
+                {
+                    try
                     {
                         ConsoleHelper.WriteProgress($"Deleting badge '{createdBadgeId}'...");
                         var printToken = await auth.GetUserTokenAsync();
                         await badgeMgmt.DeleteBadgeAsync(printToken, badgeCollectionId, createdBadgeId);
                         ConsoleHelper.WriteSuccess("Badge deleted.");
                     }
-
-                    var graphToken = await auth.GetGraphTokenAsync();
-
-                    if (!string.IsNullOrEmpty(shareId))
+                    catch (Exception badgeCleanupEx)
                     {
+                        ConsoleHelper.WriteWarning($"Failed to delete badge: {badgeCleanupEx.Message}");
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(shareId))
+                {
+                    try
+                    {
+                        var graphToken = await auth.GetGraphTokenAsync();
                         ConsoleHelper.WriteProgress($"Deleting share {shareId}...");
                         await printerShare.DeleteShareAsync(graphToken, shareId);
                         ConsoleHelper.WriteSuccess("Share deleted.");
                     }
-
-                    if (!string.IsNullOrEmpty(printerId))
+                    catch (Exception shareCleanupEx)
                     {
+                        ConsoleHelper.WriteWarning($"Failed to delete share: {shareCleanupEx.Message}");
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(printerId))
+                {
+                    try
+                    {
+                        var graphToken = await auth.GetGraphTokenAsync();
                         ConsoleHelper.WriteProgress($"Deleting printer {printerId}...");
                         await printerShare.DeletePrinterAsync(graphToken, printerId);
                         ConsoleHelper.WriteSuccess("Printer deleted.");
                     }
-                }
-                catch (Exception cleanupEx)
-                {
-                    ConsoleHelper.WriteWarning($"Cleanup failed: {cleanupEx.Message}");
-                    ConsoleHelper.WriteInfo("You may need to clean up manually in the Azure portal.");
-                    ConsoleHelper.WriteKeyValue("Printer ID", printerId);
-                    ConsoleHelper.WriteKeyValue("Share ID", shareId);
+                    catch (Exception printerCleanupEx)
+                    {
+                        ConsoleHelper.WriteWarning($"Failed to delete printer: {printerCleanupEx.Message}");
+                    }
                 }
             }
         }

@@ -26,7 +26,7 @@ public static class MinimalIpp
     private const ushort OP_FETCH_JOB = 0x0043;
     private const ushort OP_ACKNOWLEDGE_JOB = 0x0041;
     private const ushort OP_FETCH_DOCUMENT = 0x0042;
-    private const ushort OP_UPDATE_JOB_STATUS = 0x0045;
+    private const ushort OP_UPDATE_JOB_STATUS = 0x0048;
 
     // Attribute group tags
     private const byte TAG_OPERATION_ATTRIBUTES = 0x01;
@@ -203,10 +203,10 @@ public static class MinimalIpp
         // Job ID
         WriteIntegerAttribute(stream, "job-id", jobId);
         
-        // Status message (if provided)
+        // Fetch status message (if provided)
         if (!string.IsNullOrEmpty(statusMessage))
         {
-            WriteStringAttribute(stream, "status-message", statusMessage);
+            WriteStringAttribute(stream, "fetch-status-message", statusMessage);
         }
         
         stream.WriteByte(TAG_END_OF_ATTRIBUTES);
@@ -293,9 +293,12 @@ public static class MinimalIpp
             WriteAttributeWithTag(stream, TAG_MS_CHARSET, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
         }
         
-        // Job ID and job state
+        // Job ID in operation attributes
         WriteIntegerAttribute(stream, "job-id", jobId);
-        WriteIntegerAttribute(stream, "job-state", jobState);
+
+        // Job state in job attributes group
+        stream.WriteByte(TAG_JOB_ATTRIBUTES);
+        WriteEnumAttribute(stream, "output-device-job-state", jobState);
         
         stream.WriteByte(TAG_END_OF_ATTRIBUTES);
         
@@ -308,6 +311,11 @@ public static class MinimalIpp
     /// </summary>
     public static (ushort StatusCode, List<Dictionary<string, object>> JobAttributes) ParseGetJobsResponse(byte[] responseData)
     {
+        if (responseData.Length < 8)
+        {
+            throw new InvalidDataException("Invalid IPP response: expected at least 8 bytes for header.");
+        }
+
         using var stream = new MemoryStream(responseData);
         using var reader = new BinaryReader(stream);
 
@@ -345,8 +353,13 @@ public static class MinimalIpp
     /// <summary>
     /// Parses an IPP response for Fetch-Job and extracts job attributes.
     /// </summary>
-    public static (ushort StatusCode, Dictionary<string, object> JobAttributes, MemoryStream? DocumentData) ParseFetchJobResponse(byte[] responseData)
+    public static (ushort StatusCode, Dictionary<string, object> JobAttributes, byte[]? DocumentData) ParseFetchJobResponse(byte[] responseData)
     {
+        if (responseData.Length < 8)
+        {
+            throw new InvalidDataException("Invalid IPP response: expected at least 8 bytes for header.");
+        }
+
         using var stream = new MemoryStream(responseData);
         using var reader = new BinaryReader(stream);
 
@@ -377,9 +390,7 @@ public static class MinimalIpp
 
         // Remaining bytes are the document data (if any)
         byte[] documentData = reader.ReadBytes((int)(stream.Length - stream.Position));
-        var docStream = documentData.Length > 0 ? new MemoryStream(documentData) : null;
-
-        return (statusCode, jobAttrs, docStream);
+        return (statusCode, jobAttrs, documentData.Length > 0 ? documentData : null);
     }
 
     /// <summary>
@@ -388,7 +399,9 @@ public static class MinimalIpp
     public static ushort ParseStatusCodeResponse(byte[] responseData)
     {
         if (responseData.Length < 8)
-            return 0;
+        {
+            throw new InvalidDataException("Invalid IPP response: expected at least 8 bytes for header.");
+        }
 
         return (ushort)((responseData[2] << 8) | responseData[3]);
     }
@@ -443,6 +456,7 @@ public static class MinimalIpp
     private static Dictionary<string, object> ParseAttributeGroup(BinaryReader reader)
     {
         var attrs = new Dictionary<string, object>();
+        string? lastAttributeName = null;
 
         while (reader.BaseStream.Position < reader.BaseStream.Length)
         {
@@ -457,7 +471,32 @@ public static class MinimalIpp
             string name = ReadString(reader);
             object value = ReadValue(reader, tag);
 
-            attrs[name] = value;
+            var attributeName = string.IsNullOrEmpty(name) ? lastAttributeName : name;
+            if (string.IsNullOrEmpty(attributeName))
+            {
+                throw new InvalidDataException("Malformed IPP attribute group: encountered empty attribute name without a previous name.");
+            }
+
+            if (!string.IsNullOrEmpty(name))
+            {
+                lastAttributeName = name;
+            }
+
+            if (attrs.TryGetValue(attributeName, out var existingValue))
+            {
+                if (existingValue is List<object> existingList)
+                {
+                    existingList.Add(value);
+                }
+                else
+                {
+                    attrs[attributeName] = new List<object> { existingValue, value };
+                }
+            }
+            else
+            {
+                attrs[attributeName] = value;
+            }
         }
 
         return attrs;
@@ -490,15 +529,26 @@ public static class MinimalIpp
     private static object ReadValue(BinaryReader reader, byte tag)
     {
         ushort length = ReadUInt16BigEndian(reader);
+        byte[] valueBytes = reader.ReadBytes(length);
+        if (valueBytes.Length != length)
+        {
+            throw new InvalidDataException("Malformed IPP value: insufficient bytes for declared length.");
+        }
 
         return tag switch
         {
-            TAG_INTEGER => ReadInt32BigEndian(reader),
-            TAG_BOOLEAN => reader.ReadByte() != 0,
-            TAG_ENUM => ReadInt32BigEndian(reader),
+            TAG_INTEGER => length == 4
+                ? (int)((valueBytes[0] << 24) | (valueBytes[1] << 16) | (valueBytes[2] << 8) | valueBytes[3])
+                : valueBytes,
+            TAG_BOOLEAN => length == 1
+                ? valueBytes[0] != 0
+                : valueBytes,
+            TAG_ENUM => length == 4
+                ? (int)((valueBytes[0] << 24) | (valueBytes[1] << 16) | (valueBytes[2] << 8) | valueBytes[3])
+                : valueBytes,
             TAG_KEYWORD or TAG_NAME_WITHOUT_LANGUAGE or TAG_TEXT_WITHOUT_LANGUAGE or TAG_URI or TAG_STRING =>
-                Encoding.UTF8.GetString(reader.ReadBytes(length)),
-            _ => reader.ReadBytes(length)
+                Encoding.UTF8.GetString(valueBytes),
+            _ => valueBytes
         };
     }
 

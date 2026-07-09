@@ -97,18 +97,11 @@ Edit `appsettings.json`:
 | `AppId` | Your Entra ID app registration client ID (GUID) | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
 | `Tenant` | Your tenant domain or GUID | `contoso.onmicrosoft.com` or a tenant GUID |
 
-The remaining settings point to commercial production Universal Print endpoints. For government cloud environments, see below.
+The remaining settings point to commercial production Universal Print endpoints.
 
 ### Government Cloud
 
-For US Government cloud environments, update the service URLs in `appsettings.json`:
-
-| Setting | GCC | GCCH | DoD |
-|---------|-----|------|-----|
-| `GraphBaseUrl` | `https://graph.microsoft.com/v1.0` | `https://graph.microsoft.us/v1.0` | `https://dod-graph.microsoft.us/v1.0` |
-| `GraphPrintBaseUrl` | `https://gcc-graph.print.azure.us/v1.0` | `https://graph.print.azure.us/v1.0` | `https://graph.print-dod.azure.us/v1.0` |
-| `RegistrationBaseUrl` | `https://gcc-register.print.azure.us` | `https://register.print.azure.us` | `https://register.print-dod.azure.us` |
-| `IppServiceBaseUrl` | `https://gcc-print.print.azure.us` | `https://print.print.azure.us` | `https://print.print-dod.azure.us` |
+Government cloud is not supported by this demo today. Badge Release APIs in this demo target commercial Universal Print endpoints only.
 
 ## Build & Run
 
@@ -139,13 +132,8 @@ BadgeReleaseDemo/
 │   └── PrintJobSubmission.cs           # Job creation, document upload, job start via Graph
 │
 ├── IppOperations/
+│   ├── MinimalIpp.cs                   # Minimal custom IPP serializer/parser for required operations
 │   └── PrinterIppClient.cs             # IPP INFRA operations + Badge REST API call
-│
-├── IppLibrary/                         # IPP protocol serialization library (vendored)
-│   ├── IPPRequest.cs                   # IPP request building and serialization
-│   ├── IPPResponse.cs                  # IPP response parsing
-│   ├── IPPAttribute.cs                 # IPP attribute types and encoding
-│   └── ... (28 files)                  # Constants, datatypes, encoding helpers
 │
 ├── Helpers/
 │   ├── ConsoleHelper.cs                # Colored console output helpers

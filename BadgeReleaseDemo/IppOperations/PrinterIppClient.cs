@@ -119,7 +119,7 @@ public class PrinterIppClient
     /// <summary>
     /// Sends Fetch-Job IPP request to get job metadata.
     /// </summary>
-    public async Task<(ushort StatusCode, Dictionary<string, object> JobAttributes, MemoryStream? DocumentData)> FetchJobAsync(
+    public async Task<(ushort StatusCode, Dictionary<string, object> JobAttributes, byte[]? DocumentData)> FetchJobAsync(
         string printerToken, string printerId, int jobId, string requestingUserUri)
     {
         var ippHost = new Uri(ippServiceBaseUrl).Host;
@@ -176,7 +176,7 @@ public class PrinterIppClient
             jobUri: jobUri);
 
         var responseData = await SendIppRequestAsync(printerToken, ippRequest);
-        var (statusCode, _, docStream) = MinimalIpp.ParseFetchJobResponse(responseData);
+        var (statusCode, _, documentData) = MinimalIpp.ParseFetchJobResponse(responseData);
 
         if (statusCode != 0x0000)
         {
@@ -184,19 +184,13 @@ public class PrinterIppClient
             return null;
         }
 
-        if (docStream == null)
+        if (documentData == null)
         {
             ConsoleHelper.WriteError("Fetch-Document response contained no document data.");
             return null;
         }
-
-        using (docStream)
-        {
-            docStream.Seek(0, SeekOrigin.Begin);
-            using var ms = new MemoryStream();
-            await docStream.CopyToAsync(ms);
-            return ms.ToArray();
-        }
+        
+        return documentData;
     }
 
     /// <summary>

@@ -30,10 +30,10 @@ public class BadgeManagement
     /// </summary>
     public async Task<string> CreateBadgeCollectionAsync(string accessToken)
     {
-        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
-        var content = new StringContent("{}", Encoding.UTF8, "application/json");
-        var response = await httpClient.PostAsync($"{graphBaseUrl}/print/badgeCollections", content);
+        using var request = new HttpRequestMessage(HttpMethod.Post, $"{graphBaseUrl}/print/badgeCollections");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode == HttpStatusCode.Conflict)
@@ -61,8 +61,6 @@ public class BadgeManagement
 
     private async Task<string> WaitForBadgeCollectionProvisioningAsync(string accessToken)
     {
-        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
         const int maxAttempts = 60;
         const int delayMilliseconds = 10000;
 
@@ -92,9 +90,9 @@ public class BadgeManagement
 
     private async Task<string?> TryGetBadgeCollectionIdAsync(string accessToken)
     {
-        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
-        var response = await httpClient.GetAsync($"{graphBaseUrl}/print/badgeCollections");
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{graphBaseUrl}/print/badgeCollections");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode == HttpStatusCode.NotFound)
@@ -134,8 +132,6 @@ public class BadgeManagement
     /// </summary>
     public async Task AddBadgeAsync(string accessToken, string collectionId, string badgeId, string upn)
     {
-        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
         var requestBody = new
         {
             id = badgeId,
@@ -143,18 +139,17 @@ public class BadgeManagement
         };
 
         var json = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(json, Encoding.UTF8, "application/json");
-
-        var response = await httpClient.PostAsync(
-            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges",
-            content);
+        using var request = new HttpRequestMessage(HttpMethod.Post,
+            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
-            ConsoleHelper.WriteInfo($"Badge '{badgeId}' already exists. Updating...");
-            await UpdateBadgeAsync(accessToken, collectionId, badgeId, upn);
-            return;
+            throw new InvalidOperationException(
+                $"Badge '{badgeId}' already exists. Choose a unique badge ID to avoid overwriting an existing user mapping.");
         }
 
         if (!response.IsSuccessStatusCode)
@@ -162,30 +157,6 @@ public class BadgeManagement
             throw new HttpRequestException($"Failed to add badge: {response.StatusCode} - {responseBody}");
         }
     }
-
-    /// <summary>
-    /// Updates an existing badge's UPN.
-    /// </summary>
-    private async Task UpdateBadgeAsync(string accessToken, string collectionId, string badgeId, string upn)
-    {
-        var requestBody = new { upn };
-        var json = JsonSerializer.Serialize(requestBody);
-        var request = new HttpRequestMessage(HttpMethod.Patch,
-            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges/{badgeId}")
-        {
-            Content = new StringContent(json, Encoding.UTF8, "application/json")
-        };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
-        var response = await httpClient.SendAsync(request);
-        var responseBody = await response.Content.ReadAsStringAsync();
-
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException($"Failed to update badge: {response.StatusCode} - {responseBody}");
-        }
-    }
-
     /// <summary>
     /// Deletes a badge from the collection.
     /// </summary>
