@@ -184,6 +184,7 @@ public class Program
             // Badge scan retry loop
             string? resolvedUserUri = null;
             int resolvedJobId = 0;
+            string resolvedJobUri = string.Empty;
 
             while (true)
             {
@@ -237,19 +238,24 @@ public class Program
             }
 
             resolvedJobId = jobs[0].JobId;
+            resolvedJobUri = jobs[0].JobUri;
             ConsoleHelper.WriteSuccess($"Found {jobs.Count} fetchable job(s).");
             ConsoleHelper.WriteKeyValue("Fetching Job ID", resolvedJobId.ToString());
+            if (!string.IsNullOrEmpty(resolvedJobUri))
+            {
+                ConsoleHelper.WriteKeyValue("Fetching Job URI", resolvedJobUri);
+            }
 
             // ═══════════════════════════════════════════════════════════
             // Step 11: Fetch-Job (get job metadata)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Printer: Fetching job metadata...");
-            var fetchJobResponse = await ippClient.FetchJobAsync(
+            var (fetchJobStatusCode, fetchJobAttrs, fetchJobDocStream) = await ippClient.FetchJobAsync(
                 printerToken, printerId, resolvedJobId, resolvedUserUri!);
 
-            if (fetchJobResponse.StatusCode != BadgeReleaseDemo.IppLibrary.StatusCode.SuccessfulOk)
+            if (fetchJobStatusCode != 0x0000) // 0x0000 = successful-ok
             {
-                ConsoleHelper.WriteError($"Fetch-Job failed: {fetchJobResponse.StatusCode}");
+                ConsoleHelper.WriteError($"Fetch-Job failed: {fetchJobStatusCode:X4}");
                 return;
             }
 
@@ -262,9 +268,9 @@ public class Program
             var ackStatus = await ippClient.AcknowledgeJobAsync(
                 printerToken, printerId, resolvedJobId, resolvedUserUri!);
 
-            if (ackStatus != BadgeReleaseDemo.IppLibrary.StatusCode.SuccessfulOk)
+            if (ackStatus != 0x0000) // 0x0000 = successful-ok
             {
-                ConsoleHelper.WriteError($"Acknowledge-Job failed: {ackStatus}");
+                ConsoleHelper.WriteError($"Acknowledge-Job failed: {ackStatus:X4}");
                 return;
             }
 
@@ -275,7 +281,7 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("📄", "Printer: Downloading document...");
             var documentData = await ippClient.FetchDocumentAsync(
-                printerToken, printerId, resolvedJobId, resolvedUserUri!);
+                printerToken, printerId, resolvedJobId, resolvedUserUri!, resolvedJobUri);
 
             if (documentData == null || documentData.Length == 0)
             {
@@ -293,11 +299,11 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("✅", "Printer: Marking job as completed...");
             var completeStatus = await ippClient.UpdateJobStatusAsync(
-                printerToken, printerId, resolvedJobId);
+                printerToken, printerId, resolvedJobId, resolvedUserUri!);
 
-            if (completeStatus != BadgeReleaseDemo.IppLibrary.StatusCode.SuccessfulOk)
+            if (completeStatus != 0x0000) // 0x0000 = successful-ok
             {
-                ConsoleHelper.WriteError($"Update-Job-Status failed: {completeStatus}");
+                ConsoleHelper.WriteError($"Update-Job-Status failed: {completeStatus:X4}");
                 return;
             }
 

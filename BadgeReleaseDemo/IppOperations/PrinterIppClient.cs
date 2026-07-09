@@ -5,18 +5,18 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using BadgeReleaseDemo.Helpers;
-using BadgeReleaseDemo.IppLibrary;
-using BadgeReleaseDemo.IppLibrary.Common;
 
 namespace BadgeReleaseDemo.IppOperations;
 
 /// <summary>
 /// Performs IPP INFRA operations as a printer: Get-Jobs, Fetch-Job,
 /// Acknowledge-Job, Fetch-Document, and Update-Job-Status.
-/// Uses the IppLibrary for IPP request building and serialization.
+/// Uses the minimal custom IPP implementation for a focused, auditable approach.
 /// </summary>
 public class PrinterIppClient
 {
+    private const int JOB_STATE_COMPLETED = 9;
+
     private readonly string ippServiceBaseUrl;
     private readonly string ippServicePrinterPath;
     private readonly string badgesApiPath;
@@ -71,47 +71,40 @@ public class PrinterIppClient
         string printerToken, string printerId, string requestingUserUri)
     {
         var ippHost = new Uri(ippServiceBaseUrl).Host;
-        var factory = IppFactoryHelper.CreateIppRequestFactory(
-            ippHost, printerId, string.Empty, requestingUserUri);
+        var printerUri = $"ipps://{ippHost}/printers/{printerId}";
 
-        var requestedAttributes = new List<IppAttribute>
-        {
-            new IppAttribute(RequestedAttributes.All)
-        };
-
-        var ippRequest = await factory.CreateGetJobsRequestAsync(
+        var ippRequest = MinimalIpp.BuildGetJobsRequest(
             requestId: 1,
+            printerUri: printerUri,
             jobType: "fetchable",
-            requestingUserName: string.Empty,
             requestingUserUri: requestingUserUri,
-            printerUri: $"ipps://{ippHost}/printers/{printerId}",
-            outputDeviceUuid: printerId,
-            requestedAttributes: requestedAttributes);
+            outputDeviceUuid: printerId);
 
-        var ippResponse = await SendIppRequestAsync(printerToken, ippRequest);
+        var responseData = await SendIppRequestAsync(printerToken, ippRequest);
+        
+        var (statusCode, jobAttributes) = MinimalIpp.ParseGetJobsResponse(responseData);
 
-        if (ippResponse.StatusCode != StatusCode.SuccessfulOk)
+        if (statusCode != 0x0000) // 0x0000 = successful-ok
         {
-            ConsoleHelper.WriteWarning($"Get-Jobs returned status: {ippResponse.StatusCode}");
+            ConsoleHelper.WriteWarning($"Get-Jobs returned status: {statusCode:X4}");
             return new List<(int, string)>();
         }
 
         var jobs = new List<(int JobId, string JobUri)>();
-        var jobGroups = ippResponse.LookupAttributeGroup(Tag.JobAttributes);
 
-        foreach (var group in jobGroups)
+        foreach (var jobAttrs in jobAttributes)
         {
             int jobId = 0;
             string jobUri = string.Empty;
 
-            if (group.Attributes.TryGetValue(JobAttributes.JobId, out var jobIdAttr))
+            if (jobAttrs.TryGetValue("job-id", out var jobIdObj) && jobIdObj is int id)
             {
-                jobId = jobIdAttr.FirstValue.GetNativeValue<int>();
+                jobId = id;
             }
 
-            if (group.Attributes.TryGetValue(JobAttributes.JobUri, out var jobUriAttr))
+            if (jobAttrs.TryGetValue("job-uri", out var jobUriObj) && jobUriObj is string uri)
             {
-                jobUri = jobUriAttr.FirstValue.GetNativeValue<string>() ?? string.Empty;
+                jobUri = uri;
             }
 
             if (jobId > 0)
@@ -126,40 +119,42 @@ public class PrinterIppClient
     /// <summary>
     /// Sends Fetch-Job IPP request to get job metadata.
     /// </summary>
-    public async Task<IppResponse> FetchJobAsync(
+    public async Task<(ushort StatusCode, Dictionary<string, object> JobAttributes, MemoryStream? DocumentData)> FetchJobAsync(
         string printerToken, string printerId, int jobId, string requestingUserUri)
     {
         var ippHost = new Uri(ippServiceBaseUrl).Host;
-        var factory = IppFactoryHelper.CreateIppRequestFactory(
-            ippHost, printerId, string.Empty, requestingUserUri);
+        var printerUri = $"ipps://{ippHost}/printers/{printerId}";
 
-        var ippRequest = await factory.CreateFetchJobRequestAsync(
+        var ippRequest = MinimalIpp.BuildFetchJobRequest(
             requestId: 2,
+            printerUri: printerUri,
+            jobId: jobId,
             outputDeviceUuid: printerId,
-            jobId: jobId);
+            requestingUserUri: requestingUserUri);
 
-        return await SendIppRequestAsync(printerToken, ippRequest);
+        var responseData = await SendIppRequestAsync(printerToken, ippRequest);
+        return MinimalIpp.ParseFetchJobResponse(responseData);
     }
 
     /// <summary>
     /// Sends Acknowledge-Job IPP request to confirm receipt of the job.
     /// </summary>
-    public async Task<StatusCode> AcknowledgeJobAsync(
+    public async Task<ushort> AcknowledgeJobAsync(
         string printerToken, string printerId, int jobId, string requestingUserUri)
     {
         var ippHost = new Uri(ippServiceBaseUrl).Host;
-        var factory = IppFactoryHelper.CreateIppRequestFactory(
-            ippHost, printerId, string.Empty, requestingUserUri);
+        var printerUri = $"ipps://{ippHost}/printers/{printerId}";
 
-        var ippRequest = await factory.CreateAcknowledgeJobRequestAsync(
+        var ippRequest = MinimalIpp.BuildAcknowledgeJobRequest(
             requestId: 3,
-            outputDeviceUuid: printerId,
+            printerUri: printerUri,
             jobId: jobId,
-            fetchStatusCode: StatusCode.Undefined,
-            fetchStatusMessage: "Badge release demo - job acknowledged");
+            statusMessage: "Badge release demo - job acknowledged",
+            outputDeviceUuid: printerId,
+            requestingUserUri: requestingUserUri);
 
-        var response = await SendIppRequestAsync(printerToken, ippRequest);
-        return response.StatusCode;
+        var responseData = await SendIppRequestAsync(printerToken, ippRequest);
+        return MinimalIpp.ParseStatusCodeResponse(responseData);
     }
 
     /// <summary>
@@ -167,63 +162,62 @@ public class PrinterIppClient
     /// Returns the document payload bytes.
     /// </summary>
     public async Task<byte[]?> FetchDocumentAsync(
-        string printerToken, string printerId, int jobId, string requestingUserUri)
+        string printerToken, string printerId, int jobId, string requestingUserUri, string jobUri = "")
     {
         var ippHost = new Uri(ippServiceBaseUrl).Host;
-        var factory = IppFactoryHelper.CreateIppRequestFactory(
-            ippHost, printerId, string.Empty, requestingUserUri);
-
-        var ippRequest = await factory.CreateFetchDocumentRequestAsync(
+        var printerUri = $"ipps://{ippHost}/printers/{printerId}";
+        var ippRequest = MinimalIpp.BuildFetchDocumentRequest(
             requestId: 4,
-            outputDeviceUuid: printerId,
+            printerUri: printerUri,
             jobId: jobId,
-            documentNumber: 1);
+            documentNumber: 1,
+            outputDeviceUuid: printerId,
+            requestingUserUri: requestingUserUri,
+            jobUri: jobUri);
 
-        var response = await SendIppRequestAsync(printerToken, ippRequest);
+        var responseData = await SendIppRequestAsync(printerToken, ippRequest);
+        var (statusCode, _, docStream) = MinimalIpp.ParseFetchJobResponse(responseData);
 
-        if (response.StatusCode != StatusCode.SuccessfulOk)
+        if (statusCode != 0x0000)
         {
-            ConsoleHelper.WriteError($"Fetch-Document failed: {response.StatusCode}");
+            ConsoleHelper.WriteError($"Fetch-Document failed: {statusCode:X4}");
             return null;
         }
 
-        if (response.Data == null)
+        if (docStream == null)
         {
             ConsoleHelper.WriteError("Fetch-Document response contained no document data.");
             return null;
         }
 
-        using var ms = new MemoryStream();
-        response.Data.Seek(0, SeekOrigin.Begin);
-        await response.Data.CopyToAsync(ms);
-        return ms.ToArray();
+        using (docStream)
+        {
+            docStream.Seek(0, SeekOrigin.Begin);
+            using var ms = new MemoryStream();
+            await docStream.CopyToAsync(ms);
+            return ms.ToArray();
+        }
     }
 
     /// <summary>
     /// Sends Update-Job-Status to mark the job as completed.
     /// </summary>
-    public async Task<StatusCode> UpdateJobStatusAsync(
-        string printerToken, string printerId, int jobId)
+    public async Task<ushort> UpdateJobStatusAsync(
+        string printerToken, string printerId, int jobId, string requestingUserUri)
     {
         var ippHost = new Uri(ippServiceBaseUrl).Host;
-        var factory = IppFactoryHelper.CreateIppRequestFactory(
-            ippHost, printerId, string.Empty, string.Empty);
+        var printerUri = $"ipps://{ippHost}/printers/{printerId}";
 
-        var jobAttributeGroup = new IppAttributeGroup(Tag.JobAttributes);
-        jobAttributeGroup.AddAttribute(
-            new IppAttribute(JobAttributes.OutputDeviceJobState,
-                IppValue.CreateEnumValue((int)JobState.Completed)));
-        jobAttributeGroup.AddAttribute(
-            new IppAttribute(JobAttributes.JobId,
-                IppValue.CreateIntegerValue(jobId)));
-
-        var ippRequest = await factory.CreateUpdateJobStatusRequestAsync(
+        var ippRequest = MinimalIpp.BuildUpdateJobStatusRequest(
             requestId: 5,
+            printerUri: printerUri,
+            jobId: jobId,
+            jobState: JOB_STATE_COMPLETED,
             outputDeviceUuid: printerId,
-            optionalJobAttributes: jobAttributeGroup);
+            requestingUserUri: requestingUserUri);
 
-        var response = await SendIppRequestAsync(printerToken, ippRequest);
-        return response.StatusCode;
+        var responseData = await SendIppRequestAsync(printerToken, ippRequest);
+        return MinimalIpp.ParseStatusCodeResponse(responseData);
     }
 
     /// <summary>
@@ -255,21 +249,16 @@ public class PrinterIppClient
     }
 
     /// <summary>
-    /// Serializes and sends an IPP request over HTTP, returns the parsed IPP response.
+    /// Sends a minimal IPP request over HTTP, returns the raw response bytes.
     /// </summary>
-    private async Task<IppResponse> SendIppRequestAsync(string accessToken, IppRequest ippRequest)
+    private async Task<byte[]> SendIppRequestAsync(string accessToken, byte[] ippRequest)
     {
         var printerEndpoint = $"{ippServiceBaseUrl}{ippServicePrinterPath}";
-
-        var serializedData = ippRequest.Serialize();
-        serializedData.Seek(0, SeekOrigin.Begin);
-        var dataBuffer = new byte[serializedData.Length];
-        await serializedData.ReadAsync(dataBuffer, 0, (int)serializedData.Length);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, printerEndpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Headers.Add("User-Agent", "BadgeReleaseDemo/1.0");
-        request.Content = new ByteArrayContent(dataBuffer);
+        request.Content = new ByteArrayContent(ippRequest);
         request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/ipp");
 
         var response = await httpClient.SendAsync(request);
@@ -288,28 +277,6 @@ public class PrinterIppClient
                 $"IPP request failed: {(int)response.StatusCode} {response.StatusCode} - {errorBody}");
         }
 
-        // Copy to MemoryStream so it's seekable (required for IppResponse.CreateAsync to populate Data)
-        var networkStream = await response.Content.ReadAsStreamAsync();
-        var stream = new MemoryStream();
-        await networkStream.CopyToAsync(stream);
-        stream.Seek(0, SeekOrigin.Begin);
-        var cts = new CancellationTokenSource();
-        var ippResponse = await IppResponse.CreateAsync(stream, true, cts.Token);
-
-        if (ippResponse.StatusCode != StatusCode.SuccessfulOk)
-        {
-            ConsoleHelper.WriteWarning($"IPP response status: {ippResponse.StatusCode}");
-            LogResponseHeaders(response);
-        }
-
-        return ippResponse;
-    }
-
-    private static void LogResponseHeaders(HttpResponseMessage response)
-    {
-        foreach (var header in response.Headers)
-        {
-            ConsoleHelper.WriteKeyValue(header.Key, string.Join(", ", header.Value));
-        }
+        return await response.Content.ReadAsByteArrayAsync();
     }
 }
