@@ -23,7 +23,6 @@ public class AuthHelper
 {
     private readonly string appId;
     private readonly string tenantId;
-    private readonly string graphBaseUrl;
     private IPublicClientApplication? publicClient;
     private AuthenticationResult? userAuthResult;
     private AuthenticationResult? graphAuthResult;
@@ -39,11 +38,10 @@ public class AuthHelper
 
     public string PrinterToken => printerToken ?? throw new InvalidOperationException("Printer token not acquired");
 
-    public AuthHelper(string appId, string tenantId, string graphBaseUrl)
+    public AuthHelper(string appId, string tenantId)
     {
         this.appId = appId;
         this.tenantId = tenantId;
-        this.graphBaseUrl = graphBaseUrl;
     }
 
     /// <summary>

@@ -12,7 +12,7 @@ namespace BadgeReleaseDemo.GraphApi;
 /// <summary>
 /// Handles print job creation, document upload, and job start via MS Graph API.
 /// </summary>
-public class PrintJobSubmission
+public class PrintJobSubmission : IDisposable
 {
     private readonly string graphBaseUrl;
     private readonly HttpClient httpClient;
@@ -22,6 +22,8 @@ public class PrintJobSubmission
         this.graphBaseUrl = graphBaseUrl;
         httpClient = new HttpClient();
     }
+
+    public void Dispose() => httpClient.Dispose();
 
     /// <summary>
     /// Creates a print job on a printer share.
@@ -51,9 +53,6 @@ public class PrintJobSubmission
         });
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
-        ConsoleHelper.WriteInfo($"POST {graphBaseUrl}/print/shares/{shareId}/jobs");
-        ConsoleHelper.WriteInfo($"Body: {json}");
-
         var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
@@ -82,7 +81,7 @@ public class PrintJobSubmission
     /// Returns the upload URL.
     /// </summary>
     public async Task<string> CreateUploadSessionAsync(
-        string accessToken, string shareId, string jobId, string documentId, long documentSize)
+        string accessToken, string shareId, string jobId, string documentId, string documentName, long documentSize)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post,
             $"{graphBaseUrl}/print/shares/{shareId}/jobs/{jobId}/documents/{documentId}/createUploadSession");
@@ -92,7 +91,7 @@ public class PrintJobSubmission
         {
             ["properties"] = new Dictionary<string, object>
             {
-                ["documentName"] = "SampleDocument.pdf",
+                ["documentName"] = documentName,
                 ["contentType"] = "application/pdf",
                 ["size"] = documentSize,
             },

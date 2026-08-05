@@ -14,7 +14,7 @@ namespace BadgeReleaseDemo.GraphApi;
 /// Handles printer registration via the Universal Print Registration Service
 /// (https://register.print.microsoft.com).
 /// </summary>
-public class PrinterRegistration
+public class PrinterRegistration : IDisposable
 {
     private readonly string registrationBaseUrl;
     private readonly HttpClient httpClient;
@@ -24,6 +24,8 @@ public class PrinterRegistration
         this.registrationBaseUrl = registrationBaseUrl.TrimEnd('/');
         httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
     }
+
+    public void Dispose() => httpClient.Dispose();
 
     /// <summary>
     /// Registers a new printer with Universal Print via the registration service.
@@ -35,8 +37,6 @@ public class PrinterRegistration
         string csrContent,
         string transportKey)
     {
-        httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-
         // Step 1: Initiate registration via POST /api/v1.0/register
         // Registration API uses snake_case field names
         var requestBody = new Dictionary<string, object>
@@ -57,10 +57,13 @@ public class PrinterRegistration
         };
 
         var json = JsonSerializer.Serialize(requestBody);
-        var content = new StringContent(json, Encoding.UTF8, "application/json");
 
         var regUrl = $"{registrationBaseUrl}/api/v1.0/register";
-        var response = await httpClient.PostAsync(regUrl, content);
+        using var registerRequest = new HttpRequestMessage(HttpMethod.Post, regUrl);
+        registerRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        registerRequest.Content = new StringContent(json, Encoding.UTF8, "application/json");
+
+        var response = await httpClient.SendAsync(registerRequest);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
@@ -84,7 +87,9 @@ public class PrinterRegistration
 
         while (DateTime.UtcNow - startTime < maxWait)
         {
-            var statusResp = await httpClient.GetAsync(statusUrl);
+            using var statusRequest = new HttpRequestMessage(HttpMethod.Get, statusUrl);
+            statusRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            var statusResp = await httpClient.SendAsync(statusRequest);
             var statusBody = await statusResp.Content.ReadAsStringAsync();
 
             if (statusResp.StatusCode == HttpStatusCode.OK)

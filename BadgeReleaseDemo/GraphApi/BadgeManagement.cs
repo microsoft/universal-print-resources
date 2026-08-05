@@ -13,7 +13,7 @@ namespace BadgeReleaseDemo.GraphApi;
 /// <summary>
 /// Handles badge collection and badge CRUD via MS Graph API.
 /// </summary>
-public class BadgeManagement
+public class BadgeManagement : IDisposable
 {
     private readonly string graphBaseUrl;
     private readonly HttpClient httpClient;
@@ -23,6 +23,8 @@ public class BadgeManagement
         this.graphBaseUrl = graphBaseUrl;
         httpClient = new HttpClient();
     }
+
+    public void Dispose() => httpClient.Dispose();
 
     /// <summary>
     /// Creates a badge collection. Handles 409 Conflict if it already exists.
@@ -42,7 +44,7 @@ public class BadgeManagement
             return await GetBadgeCollectionIdAsync(accessToken);
         }
 
-        if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.Accepted)
+        if (!response.IsSuccessStatusCode)
         {
             throw new HttpRequestException($"Failed to create badge collection: {response.StatusCode} - {responseBody}");
         }
@@ -157,13 +159,14 @@ public class BadgeManagement
             throw new HttpRequestException($"Failed to add badge: {response.StatusCode} - {responseBody}");
         }
     }
+
     /// <summary>
     /// Deletes a badge from the collection.
     /// </summary>
     public async Task DeleteBadgeAsync(string accessToken, string collectionId, string badgeId)
     {
         using var request = new HttpRequestMessage(HttpMethod.Delete,
-            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges/{badgeId}");
+            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges/{Uri.EscapeDataString(badgeId)}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
         var response = await httpClient.SendAsync(request);

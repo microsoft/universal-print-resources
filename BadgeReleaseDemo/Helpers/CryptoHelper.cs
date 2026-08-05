@@ -9,7 +9,6 @@ using Org.BouncyCastle.Crypto.Operators;
 using Org.BouncyCastle.OpenSsl;
 using Org.BouncyCastle.Pkcs;
 using Org.BouncyCastle.Security;
-using Org.BouncyCastle.X509;
 
 namespace BadgeReleaseDemo.Helpers;
 
@@ -67,16 +66,5 @@ public static class CryptoHelper
             .Replace("\r", string.Empty)
             .Replace("\n", string.Empty)
             .Trim();
-    }
-
-    /// <summary>
-    /// Parses a PEM certificate string into an X509Certificate.
-    /// Used to extract the printer certificate from the registration response.
-    /// </summary>
-    public static X509Certificate ParseCertificate(string pemCertificate)
-    {
-        using var reader = new StringReader(pemCertificate);
-        var pemReader = new PemReader(reader);
-        return (X509Certificate)pemReader.ReadObject();
     }
 }

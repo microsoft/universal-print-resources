@@ -6,6 +6,14 @@ This repo is intended for the Universal Print team to share resources such as sa
 
 The Universal Print team does not make any commitments to the frequency of updating these resources or to responding to issues reported about them.
 
+## Contents
+
+| Resource | Description |
+|----------|-------------|
+| [BadgeReleaseDemo](./BadgeReleaseDemo) | Interactive .NET console app demonstrating the Universal Print badge release lifecycle (printer registration, secure-release sharing, badge management, and IPP job fetch). |
+| [Scripts](./Scripts) | PowerShell scripts and the Universal Print connector sample. |
+| [PrintTrace.cmd](./PrintTrace.cmd) | Batch script for collecting Universal Print client diagnostic traces. |
+
 ### IMPORTANT DISCLAIMER
 
 **The resources in this repo are meant for educational purposes only and must not be used as is. They are intended to be used for reference to enable you to build your own scripts and applications.**

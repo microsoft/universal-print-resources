@@ -10,8 +10,11 @@ namespace BadgeReleaseDemo.IppOperations;
 /// <summary>
 /// Minimal, auditable IPP (Internet Printing Protocol) implementation for Universal Print.
 /// Implements only the 5 operations needed: Get-Jobs, Fetch-Job, Acknowledge-Job, Fetch-Document, Update-Job-Status.
-/// Based on RFC 8011 (IPP/1.1) with Microsoft-specific extensions for Badge Release.
-/// 
+/// Based on RFC 8011 (IPP/1.1). The Fetch/Acknowledge/Update operations belong to the IPP INFRA
+/// extension family; the operation codes below are the values the Universal Print service expects on
+/// the wire, which differ from the codes published in the IANA IPP registry / PWG 5100.18. Where they
+/// differ, the constants here are authoritative for talking to Universal Print.
+///
 /// This is NOT a general-purpose IPP library. It is custom, minimal code with the narrowest possible
 /// attack surface for Badge Release Demo operations.
 /// </summary>
@@ -21,7 +24,8 @@ public static class MinimalIpp
     private const byte IPP_VERSION_MAJOR = 2;
     private const byte IPP_VERSION_MINOR = 0;
 
-    // Operation codes (RFC 8011 + Microsoft extensions)
+    // Operation codes. Get-Jobs is the standard RFC 8011 value; the remaining Fetch/Acknowledge/Update
+    // codes are the ones Universal Print's INFRA endpoint expects (not the IANA/PWG 5100.18 registry values).
     private const ushort OP_GET_JOBS = 0x000a;
     private const ushort OP_FETCH_JOB = 0x0043;
     private const ushort OP_ACKNOWLEDGE_JOB = 0x0041;
@@ -43,10 +47,10 @@ public static class MinimalIpp
     private const byte TAG_URI = 0x45;
     private const byte TAG_NAME_WITHOUT_LANGUAGE = 0x42;
     private const byte TAG_TEXT_WITHOUT_LANGUAGE = 0x41;
-    
-    // Microsoft custom tags (used in Universal Print IPP extensions)
-    private const byte TAG_MS_CHARSET = 0x47;  // Custom: attributes-charset, output-device-uuid
-    private const byte TAG_MS_LANGUAGE = 0x48; // Custom: attributes-natural-language
+
+    // Standard IPP value tags for the mandatory operation attributes (RFC 8011 section 5.1).
+    private const byte TAG_CHARSET = 0x47;          // attributes-charset
+    private const byte TAG_NATURAL_LANGUAGE = 0x48; // attributes-natural-language
 
     /// <summary>
     /// Builds a Get-Jobs IPP request to query fetchable jobs for a user.
@@ -65,8 +69,8 @@ public static class MinimalIpp
         stream.WriteByte(TAG_OPERATION_ATTRIBUTES);
         
         // Must start with charset and language (required by RFC 8011)
-        WriteAttributeWithTag(stream, TAG_MS_CHARSET, "attributes-charset", "UTF-8");
-        WriteAttributeWithTag(stream, TAG_MS_LANGUAGE, "attributes-natural-language", "en-us");
+        WriteAttributeWithTag(stream, TAG_CHARSET, "attributes-charset", "UTF-8");
+        WriteAttributeWithTag(stream, TAG_NATURAL_LANGUAGE, "attributes-natural-language", "en-us");
         
         // Add requesting-user-uri (can be empty but attribute should be present)
         if (!string.IsNullOrEmpty(requestingUserUri))
@@ -86,7 +90,7 @@ public static class MinimalIpp
         // Add output-device-uuid if provided
         if (!string.IsNullOrEmpty(outputDeviceUuid))
         {
-            WriteAttributeWithTag(stream, TAG_MS_CHARSET, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
+            WriteAttributeWithTag(stream, TAG_URI, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
         }
         
         // Add which-jobs attribute (keyword) AFTER printer-uri/output-device-uuid
@@ -128,9 +132,10 @@ public static class MinimalIpp
         WriteUInt16BigEndian(stream, 1); // length is always 1 for boolean
         stream.WriteByte(value ? (byte)0x01 : (byte)0x00);
     }
+
     /// <summary>
     /// Builds a Fetch-Job IPP request to retrieve job metadata.
-    /// Operation code: 0x0029 (Fetch-Job)
+    /// Operation code: OP_FETCH_JOB (0x0043) — the value Universal Print's INFRA endpoint expects.
     /// </summary>
     public static byte[] BuildFetchJobRequest(
         ushort requestId, string printerUri, int jobId, string outputDeviceUuid = "", string requestingUserUri = "")
@@ -142,8 +147,8 @@ public static class MinimalIpp
         stream.WriteByte(TAG_OPERATION_ATTRIBUTES);
         
         // Mandatory attributes
-        WriteAttributeWithTag(stream, TAG_MS_CHARSET, "attributes-charset", "UTF-8");
-        WriteAttributeWithTag(stream, TAG_MS_LANGUAGE, "attributes-natural-language", "en-us");
+        WriteAttributeWithTag(stream, TAG_CHARSET, "attributes-charset", "UTF-8");
+        WriteAttributeWithTag(stream, TAG_NATURAL_LANGUAGE, "attributes-natural-language", "en-us");
         
         // Add requesting-user-uri if provided
         if (!string.IsNullOrEmpty(requestingUserUri))
@@ -157,7 +162,7 @@ public static class MinimalIpp
         // Add output-device-uuid if provided
         if (!string.IsNullOrEmpty(outputDeviceUuid))
         {
-            WriteAttributeWithTag(stream, TAG_MS_CHARSET, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
+            WriteAttributeWithTag(stream, TAG_URI, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
         }
         
         // Job ID
@@ -182,8 +187,8 @@ public static class MinimalIpp
         stream.WriteByte(TAG_OPERATION_ATTRIBUTES);
         
         // Mandatory attributes
-        WriteAttributeWithTag(stream, TAG_MS_CHARSET, "attributes-charset", "UTF-8");
-        WriteAttributeWithTag(stream, TAG_MS_LANGUAGE, "attributes-natural-language", "en-us");
+        WriteAttributeWithTag(stream, TAG_CHARSET, "attributes-charset", "UTF-8");
+        WriteAttributeWithTag(stream, TAG_NATURAL_LANGUAGE, "attributes-natural-language", "en-us");
         
         // Add requesting-user-uri if provided
         if (!string.IsNullOrEmpty(requestingUserUri))
@@ -197,7 +202,7 @@ public static class MinimalIpp
         // Add output-device-uuid if provided
         if (!string.IsNullOrEmpty(outputDeviceUuid))
         {
-            WriteAttributeWithTag(stream, TAG_MS_CHARSET, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
+            WriteAttributeWithTag(stream, TAG_URI, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
         }
         
         // Job ID
@@ -228,8 +233,8 @@ public static class MinimalIpp
         stream.WriteByte(TAG_OPERATION_ATTRIBUTES);
         
         // Mandatory attributes
-        WriteAttributeWithTag(stream, TAG_MS_CHARSET, "attributes-charset", "UTF-8");
-        WriteAttributeWithTag(stream, TAG_MS_LANGUAGE, "attributes-natural-language", "en-us");
+        WriteAttributeWithTag(stream, TAG_CHARSET, "attributes-charset", "UTF-8");
+        WriteAttributeWithTag(stream, TAG_NATURAL_LANGUAGE, "attributes-natural-language", "en-us");
         
         // Requesting user URI (matches other working operations)
         if (!string.IsNullOrEmpty(requestingUserUri))
@@ -243,7 +248,7 @@ public static class MinimalIpp
         // Output device UUID (matches other working operations)
         if (!string.IsNullOrEmpty(outputDeviceUuid))
         {
-            WriteAttributeWithTag(stream, TAG_MS_CHARSET, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
+            WriteAttributeWithTag(stream, TAG_URI, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
         }
         
         // Job URI (some services require it explicitly for Fetch-Document)
@@ -263,7 +268,7 @@ public static class MinimalIpp
 
     /// <summary>
     /// Builds an Update-Job-Status IPP request to mark a job as completed.
-    /// Operation code: 0x0045 (UpdateActiveJobs) — Microsoft extension
+    /// Operation code: OP_UPDATE_JOB_STATUS (0x0048) — the value Universal Print's INFRA endpoint expects.
     /// </summary>
     public static byte[] BuildUpdateJobStatusRequest(
         ushort requestId, string printerUri, int jobId, int jobState, string outputDeviceUuid = "", string requestingUserUri = "")
@@ -275,8 +280,8 @@ public static class MinimalIpp
         stream.WriteByte(TAG_OPERATION_ATTRIBUTES);
         
         // Mandatory attributes
-        WriteAttributeWithTag(stream, TAG_MS_CHARSET, "attributes-charset", "UTF-8");
-        WriteAttributeWithTag(stream, TAG_MS_LANGUAGE, "attributes-natural-language", "en-us");
+        WriteAttributeWithTag(stream, TAG_CHARSET, "attributes-charset", "UTF-8");
+        WriteAttributeWithTag(stream, TAG_NATURAL_LANGUAGE, "attributes-natural-language", "en-us");
         
         // Requesting user URI (matches other working operations)
         if (!string.IsNullOrEmpty(requestingUserUri))
@@ -290,7 +295,7 @@ public static class MinimalIpp
         // Output device UUID (matches other working operations)
         if (!string.IsNullOrEmpty(outputDeviceUuid))
         {
-            WriteAttributeWithTag(stream, TAG_MS_CHARSET, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
+            WriteAttributeWithTag(stream, TAG_URI, "output-device-uuid", $"urn:uuid:{outputDeviceUuid}");
         }
         
         // Job ID in operation attributes
@@ -319,11 +324,11 @@ public static class MinimalIpp
         using var stream = new MemoryStream(responseData);
         using var reader = new BinaryReader(stream);
 
-        // IPP Header (4 bytes + 4 bytes + 4 bytes = 12 bytes minimum)
-        byte versionMajor = reader.ReadByte();
-        byte versionMinor = reader.ReadByte();
+        // IPP Header: version (2 bytes) + status-code (2 bytes) + request-id (4 bytes).
+        // Only the status code is needed here; skip the version and request-id.
+        reader.ReadBytes(2); // version-major + version-minor
         ushort statusCode = ReadUInt16BigEndian(reader);
-        uint requestId = ReadUInt32BigEndian(reader);
+        reader.ReadBytes(4); // request-id
 
         var jobs = new List<Dictionary<string, object>>();
 
@@ -363,10 +368,10 @@ public static class MinimalIpp
         using var stream = new MemoryStream(responseData);
         using var reader = new BinaryReader(stream);
 
-        byte versionMajor = reader.ReadByte();
-        byte versionMinor = reader.ReadByte();
+        // IPP Header: version (2 bytes) + status-code (2 bytes) + request-id (4 bytes).
+        reader.ReadBytes(2); // version-major + version-minor
         ushort statusCode = ReadUInt16BigEndian(reader);
-        uint requestId = ReadUInt32BigEndian(reader);
+        reader.ReadBytes(4); // request-id
 
         var jobAttrs = new Dictionary<string, object>();
 
@@ -414,13 +419,6 @@ public static class MinimalIpp
         stream.WriteByte(IPP_VERSION_MINOR);
         WriteUInt16BigEndian(stream, operationCode);
         WriteUInt32BigEndian(stream, requestId);
-    }
-
-    private static void WriteKeywordAttribute(MemoryStream stream, string name, string value)
-    {
-        stream.WriteByte(TAG_KEYWORD);
-        WriteString(stream, name);
-        WriteString(stream, value);
     }
 
     private static void WriteStringAttribute(MemoryStream stream, string name, string value)
@@ -588,12 +586,6 @@ public static class MinimalIpp
         stream.WriteByte((byte)((value >> 16) & 0xFF));
         stream.WriteByte((byte)((value >> 8) & 0xFF));
         stream.WriteByte((byte)(value & 0xFF));
-    }
-
-    private static int ReadInt32BigEndian(BinaryReader reader)
-    {
-        byte[] bytes = reader.ReadBytes(4);
-        return (int)((bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3]);
     }
 
     private static void WriteInt32BigEndian(MemoryStream stream, int value)

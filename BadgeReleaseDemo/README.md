@@ -2,6 +2,8 @@
 
 An interactive console application that demonstrates the full [Universal Print](https://learn.microsoft.com/universal-print/) badge release lifecycle — from printer registration and badge setup to badge-swipe-triggered job release.
 
+> **⚠️ IMPORTANT DISCLAIMER:** This demo is provided for **educational purposes only and must not be used as is**. It is intended as a reference to help you build your own scripts and applications. Note that it registers real printers and shares against your tenant; the demo cleans these resources up at the end, but you are responsible for verifying nothing is left behind.
+
 ## What Is Badge Release?
 
 Secure Release lets users send print jobs to a cloud queue and release them only after authenticating at the printer. This prevents uncollected printouts and ensures only the intended recipient picks up their documents. Badge Release is a form of Secure Release that is typically done by tapping an NFC badge or RFID card.
@@ -18,19 +20,18 @@ The app walks through the complete lifecycle interactively:
 |------|-------------|-----------|
 | 1. **Sign in** | Authenticate as a Printer Administrator | MSAL interactive auth |
 | 2. **Register printer** | Create a virtual printer with an in-memory certificate | `POST register.print.microsoft.com/api/v1.0/register` |
-| 3. **Share printer** | Make the printer available to all users | `POST graph.microsoft.com/v1.0/print/shares` |
+| 3. **Share printer** | Make the printer available to all users, holding jobs for secure release (`holdJobsForSecureRelease = true`) | `POST graph.microsoft.com/v1.0/print/shares` |
 | 4. **Create badge collection** | Provision a badge collection for the tenant (idempotent) | `POST graph.print.microsoft.com/v1.0/print/badgeCollections` |
 | 5. **Add badge** | Map a user-provided badge ID to the signed-in user | `POST graph.print.microsoft.com/v1.0/print/badgeCollections/{id}/badges` |
-| 6. **Enable badge release** | Configure the printer to require badge authentication | `PATCH graph.microsoft.com/v1.0/print/printers/{id}` |
-| 7. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
-| 8. **Acquire printer token** | Obtain a device token for the printer via JWT-bearer flow | `POST {deviceTokenUrl}` |
-| 9. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `GET print.print.microsoft.com/api/v1.0/badges/{badgeId}` |
-| 10. **Get-Jobs** | Find fetchable jobs for the resolved user (IPP) | IPP Get-Jobs |
-| 11. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
-| 12. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
-| 13. **Fetch-Document** | Download the print document (IPP) | IPP Fetch-Document |
-| 14. **Complete job** | Mark the job as completed (IPP) | IPP Update-Job-Status |
-| 15. **Clean up** | Delete badge, share, printer, and local files | Graph + Badge APIs |
+| 6. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
+| 7. **Acquire printer token** | Obtain a device token for the printer via JWT-bearer flow | `POST {deviceTokenUrl}` |
+| 8. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `GET print.print.microsoft.com/api/v1.0/badges/{badgeId}` |
+| 9. **Get-Jobs** | Find fetchable jobs for the resolved user (IPP) | IPP Get-Jobs |
+| 10. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
+| 11. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
+| 12. **Fetch-Document** | Download the print document (IPP) | IPP Fetch-Document |
+| 13. **Complete job** | Mark the job as completed (IPP) | IPP Update-Job-Status |
+| 14. **Clean up** | Delete badge, share, printer, and local files | Graph + Badge APIs |
 
 ## Prerequisites
 
@@ -58,7 +59,7 @@ These permissions are consented by the user at sign-in:
 | Permission | Used For |
 |---|---|
 | `PrinterShare.ReadWrite.All` | Creating and deleting printer shares |
-| `Printer.FullControl.All` | Enabling badge release on the printer, deleting the printer during cleanup |
+| `Printer.FullControl.All` | Deleting the printer during cleanup |
 | `PrintJob.ReadWrite.All` | Submitting print jobs and uploading documents |
 
 ### Delegated Permissions (Universal Print Service)
@@ -105,7 +106,7 @@ Government cloud is not supported by this demo today. Badge Release APIs in this
 
 ## Build & Run
 
-1. Update `appsettings.json` with your Entra ID **TenantId** and **ClientId** (from the app registration above).
+1. Update `appsettings.json` with your Entra ID **Tenant** and **AppId** (from the app registration above).
 2. Build and run:
 
 ```powershell
@@ -119,7 +120,7 @@ The app will walk you through each step interactively, prompting for a badge ID 
 
 ```
 BadgeReleaseDemo/
-├── Program.cs                          # Main orchestration — runs the 15-step flow
+├── Program.cs                          # Main orchestration — runs the 14-step flow
 ├── appsettings.json                    # App ID, tenant, and service endpoints
 │
 ├── Auth/
@@ -127,7 +128,7 @@ BadgeReleaseDemo/
 │
 ├── GraphApi/
 │   ├── PrinterRegistration.cs          # Printer registration via register.print.microsoft.com
-│   ├── PrinterSharing.cs               # Share CRUD + enable badge release via Graph
+│   ├── PrinterSharing.cs               # Share CRUD (with holdJobsForSecureRelease) + printer delete via Graph
 │   ├── BadgeManagement.cs              # Badge collection + badge CRUD via graph.print.microsoft.com
 │   └── PrintJobSubmission.cs           # Job creation, document upload, job start via Graph
 │

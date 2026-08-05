@@ -1,9 +1,2 @@
 bin/
 obj/
-
-# Debug/comparison artifacts
-*.bin
-*.txt
-compare.csx
-program-comparison-snippet.txt
-IppOperations/IppRequestComparison.cs

@@ -16,7 +16,7 @@ namespace BadgeReleaseDemo;
 /// Flow:
 ///   1. Sign in as Printer Admin
 ///   2. Register a virtual printer
-///   3. Share the printer
+///   3. Share the printer (with jobs held for secure release)
 ///   4. Create a badge collection and add a badge
 ///   5. Submit a PDF print job
 ///   6. Simulate badge scan → resolve badge → IPP fetch → open document → complete job
@@ -47,15 +47,16 @@ public class Program
         }
 
         // Initialize services
-        var auth = new AuthHelper(appId, tenantId, graphBaseUrl);
-        var printerReg = new PrinterRegistration(registrationBaseUrl);
-        var printerShare = new PrinterSharing(graphBaseUrl);
-        var badgeMgmt = new BadgeManagement(graphPrintBaseUrl);
-        var jobSubmission = new PrintJobSubmission(graphBaseUrl);
-        var ippClient = new PrinterIppClient(ippServiceBaseUrl, ippServicePrinterPath, badgesApiPath);
+        var auth = new AuthHelper(appId, tenantId);
+        using var printerReg = new PrinterRegistration(registrationBaseUrl);
+        using var printerShare = new PrinterSharing(graphBaseUrl);
+        using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl);
+        using var jobSubmission = new PrintJobSubmission(graphBaseUrl);
+        using var ippClient = new PrinterIppClient(
+            ippServiceBaseUrl, ippServicePrinterPath, badgesApiPath, auth.RefreshPrinterTokenAsync);
 
 
-        string printerId= string.Empty;
+        string printerId = string.Empty;
         string shareId = string.Empty;
         string badgeCollectionId = string.Empty;
         string createdBadgeId = string.Empty;
@@ -130,23 +131,26 @@ public class Program
             ConsoleHelper.WriteSuccess($"Badge '{badgeId}' mapped to {auth.UserUpn}.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 7: Enable badge release on the printer via Graph
-            // ═══════════════════════════════════════════════════════════
-            ConsoleHelper.WriteStep("🖨️", "Configuring printer for badge release...");
-            graphToken = await auth.GetGraphTokenAsync();
-            await printerShare.EnableBadgeReleaseAsync(graphToken, printerId);
-            ConsoleHelper.WriteSuccess("Badge release enabled on printer.");
-
-            // ═══════════════════════════════════════════════════════════
-            // Step 8: Submit a PDF print job
+            // Step 7: Submit a PDF print job
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("📄", "Submitting print job...");
 
-            var pdfPath = ConsoleHelper.Prompt("Enter the path to a PDF file to print");
+            var bundledPdfPath = Path.Combine(AppContext.BaseDirectory, "Resources", "SampleDocument.pdf");
+            var pdfPrompt = File.Exists(bundledPdfPath)
+                ? "Enter the path to a PDF file to print (leave blank to use the bundled sample)"
+                : "Enter the path to a PDF file to print";
+            var pdfPath = ConsoleHelper.Prompt(pdfPrompt);
+
             if (string.IsNullOrWhiteSpace(pdfPath))
             {
-                ConsoleHelper.WriteError("PDF path cannot be empty.");
-                return;
+                if (!File.Exists(bundledPdfPath))
+                {
+                    ConsoleHelper.WriteError("PDF path cannot be empty.");
+                    return;
+                }
+
+                pdfPath = bundledPdfPath;
+                ConsoleHelper.WriteInfo($"Using bundled sample document: {pdfPath}");
             }
 
             pdfPath = pdfPath.Trim('"'); // Remove quotes if user dragged file into console
@@ -165,7 +169,7 @@ public class Program
             // Upload the PDF
             ConsoleHelper.WriteProgress("Uploading document...");
             var pdfData = await File.ReadAllBytesAsync(pdfPath);
-            var uploadUrl = await jobSubmission.CreateUploadSessionAsync(graphToken, shareId, jobId, documentId, pdfData.Length);
+            var uploadUrl = await jobSubmission.CreateUploadSessionAsync(graphToken, shareId, jobId, documentId, Path.GetFileName(pdfPath), pdfData.Length);
             await jobSubmission.UploadDocumentAsync(uploadUrl, pdfData);
 
             // Start the job
@@ -173,7 +177,7 @@ public class Program
             ConsoleHelper.WriteSuccess("Print job submitted and started.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 9: Acquire printer device token + simulate badge scan
+            // Step 8: Acquire printer device token + simulate badge scan
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", "Simulating badge scan at the printer...");
             ConsoleHelper.WriteInfo("Imagine you are walking up to the printer and scanning your badge.");
@@ -183,8 +187,8 @@ public class Program
 
             // Badge scan retry loop
             string? resolvedUserUri = null;
-            int resolvedJobId = 0;
-            string resolvedJobUri = string.Empty;
+            int resolvedJobId;
+            string resolvedJobUri;
 
             while (true)
             {
@@ -213,7 +217,8 @@ public class Program
                     ConsoleHelper.WriteSuccess($"Badge resolved!");
                     ConsoleHelper.WriteKeyValue("Badge ID", badgeResult.Value.BadgeId);
                     ConsoleHelper.WriteKeyValue("User URI", resolvedUserUri);
-                    ConsoleHelper.WriteKeyValue("User ID", badgeResult.Value.UserId);
+                    ConsoleHelper.WriteKeyValue("User ID field present", badgeResult.Value.UserIdPresent ? "yes" : "no");
+                    ConsoleHelper.WriteKeyValue("User ID", badgeResult.Value.UserId ?? "(null)");
                     break;
                 }
                 catch (Exception ex)
@@ -366,20 +371,6 @@ public class Program
             {
                 ConsoleHelper.WriteHeader("🧹 Cleaning up demo resources...");
 
-                if (savedDocumentPath != null && File.Exists(savedDocumentPath))
-                {
-                    try
-                    {
-                        ConsoleHelper.WriteProgress("Deleting downloaded document...");
-                        File.Delete(savedDocumentPath);
-                        ConsoleHelper.WriteSuccess("Document deleted.");
-                    }
-                    catch (IOException)
-                    {
-                        ConsoleHelper.WriteWarning($"Could not delete document (may be open in another app): {savedDocumentPath}");
-                    }
-                }
-
                 if (!string.IsNullOrEmpty(createdBadgeId) && !string.IsNullOrEmpty(badgeCollectionId))
                 {
                     try
@@ -422,6 +413,21 @@ public class Program
                     catch (Exception printerCleanupEx)
                     {
                         ConsoleHelper.WriteWarning($"Failed to delete printer: {printerCleanupEx.Message}");
+                    }
+                }
+
+                // Delete the downloaded document last so a file lock can't abort resource cleanup above.
+                if (savedDocumentPath != null && File.Exists(savedDocumentPath))
+                {
+                    try
+                    {
+                        ConsoleHelper.WriteProgress("Deleting downloaded document...");
+                        File.Delete(savedDocumentPath);
+                        ConsoleHelper.WriteSuccess("Document deleted.");
+                    }
+                    catch (Exception docCleanupEx)
+                    {
+                        ConsoleHelper.WriteWarning($"Could not delete document ({docCleanupEx.Message}): {savedDocumentPath}");
                     }
                 }
             }
