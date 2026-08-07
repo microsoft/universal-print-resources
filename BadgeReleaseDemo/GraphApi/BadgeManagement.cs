@@ -30,6 +30,13 @@ public class BadgeManagement : IDisposable
     /// Creates a badge collection. Handles 409 Conflict if it already exists.
     /// Returns the actual collection ID from the service.
     /// </summary>
+    /// <remarks>
+    /// Creation is a long-running operation. The service responds with 202 Accepted and a
+    /// badgePrintOperation body carrying an operation ID and the eventual collection ID. The
+    /// collection appears in the list before it is provisioned, so we must poll
+    /// GET /print/operations/{operationId} until the operation state is 'succeeded' before the
+    /// collection can accept badges — otherwise adding a badge fails with 404.
+    /// </remarks>
     public async Task<string> CreateBadgeCollectionAsync(string accessToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, $"{graphBaseUrl}/print/badgeCollections");
@@ -51,37 +58,102 @@ public class BadgeManagement : IDisposable
 
         ConsoleHelper.WriteInfo("Badge collection creation initiated.");
 
-        // Poll until the badge collection is provisioned (can take up to 10 minutes)
+        // 202 Accepted: creation is a long-running operation — poll the operation to completion.
         if (response.StatusCode == HttpStatusCode.Accepted)
         {
+            var (operationId, collectionId) = ParseBadgePrintOperation(responseBody);
+
+            if (string.IsNullOrEmpty(operationId))
+            {
+                throw new InvalidOperationException(
+                    "Badge collection creation returned 202 Accepted without an operation ID to poll.");
+            }
+
             ConsoleHelper.WriteProgress("Waiting for badge collection to be provisioned (this can take up to 10 minutes)...");
-            return await WaitForBadgeCollectionProvisioningAsync(accessToken);
+            await WaitForBadgeCollectionOperationAsync(accessToken, operationId);
+
+            // The collection ID is returned with the operation; fall back to a list lookup if absent.
+            return !string.IsNullOrEmpty(collectionId)
+                ? collectionId
+                : await GetBadgeCollectionIdAsync(accessToken);
         }
 
         return await GetBadgeCollectionIdAsync(accessToken);
     }
 
-    private async Task<string> WaitForBadgeCollectionProvisioningAsync(string accessToken)
+    /// <summary>
+    /// Polls GET /print/operations/{operationId} until the badge collection provisioning
+    /// operation reaches a terminal state, honoring the service's Retry-After hint.
+    /// </summary>
+    private async Task WaitForBadgeCollectionOperationAsync(string accessToken, string operationId)
     {
-        const int maxAttempts = 60;
-        const int delayMilliseconds = 10000;
+        var maxWait = TimeSpan.FromMinutes(10);
+        var defaultDelay = TimeSpan.FromSeconds(5);
+        var startTime = DateTime.UtcNow;
 
-        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        while (DateTime.UtcNow - startTime < maxWait)
         {
-            var collectionId = await TryGetBadgeCollectionIdAsync(accessToken);
+            using var request = new HttpRequestMessage(
+                HttpMethod.Get, $"{graphBaseUrl}/print/operations/{Uri.EscapeDataString(operationId)}");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            var response = await httpClient.SendAsync(request);
+            var responseBody = await response.Content.ReadAsStringAsync();
 
-            if (!string.IsNullOrEmpty(collectionId))
+            if (!response.IsSuccessStatusCode)
             {
-                return collectionId;
+                throw new HttpRequestException(
+                    $"Failed to poll badge collection operation: {response.StatusCode} - {responseBody}");
             }
 
-            if (attempt < maxAttempts)
+            var state = ParseOperationState(responseBody);
+
+            switch (state)
             {
-                await Task.Delay(delayMilliseconds);
+                case "succeeded":
+                    return;
+                case "failed":
+                    throw new InvalidOperationException(
+                        $"Badge collection provisioning failed: {responseBody}");
             }
+
+            var delay = response.Headers.RetryAfter?.Delta ?? defaultDelay;
+            await Task.Delay(delay);
         }
 
         throw new TimeoutException("Timed out waiting for badge collection provisioning to complete.");
+    }
+
+    private static (string OperationId, string CollectionId) ParseBadgePrintOperation(string responseBody)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return (string.Empty, string.Empty);
+        }
+
+        var doc = JsonSerializer.Deserialize<JsonElement>(responseBody);
+        var operationId = doc.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? string.Empty : string.Empty;
+        var collectionId = doc.TryGetProperty("collectionId", out var collectionProp)
+            ? collectionProp.GetString() ?? string.Empty
+            : string.Empty;
+
+        return (operationId, collectionId);
+    }
+
+    private static string ParseOperationState(string responseBody)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return string.Empty;
+        }
+
+        var doc = JsonSerializer.Deserialize<JsonElement>(responseBody);
+        if (doc.TryGetProperty("status", out var statusProp) &&
+            statusProp.TryGetProperty("state", out var stateProp))
+        {
+            return stateProp.GetString() ?? string.Empty;
+        }
+
+        return string.Empty;
     }
 
     private async Task<string> GetBadgeCollectionIdAsync(string accessToken)
