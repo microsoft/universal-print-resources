@@ -25,7 +25,7 @@ The app walks through the complete lifecycle interactively:
 | 5. **Add badge** | Map a user-provided badge ID to the signed-in user | `POST graph.print.microsoft.com/v1.0/print/badgeCollections/{id}/badges` |
 | 6. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
 | 7. **Acquire printer token** | Obtain a device token for the printer via JWT-bearer flow | `POST {deviceTokenUrl}` |
-| 8. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `GET print.print.microsoft.com/api/v1.0/badges/{badgeId}` |
+| 8. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `POST print.print.microsoft.com/api/v2.0/badges/lookup` |
 | 9. **Get-Jobs** | Find fetchable jobs for the resolved user (IPP) | IPP Get-Jobs |
 | 10. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
 | 11. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
@@ -99,6 +99,9 @@ Edit `appsettings.json`:
 | `Tenant` | Your tenant domain or GUID | `contoso.onmicrosoft.com` or a tenant GUID |
 
 The remaining settings point to commercial production Universal Print endpoints.
+Badge API route versions are maintained by the demo in `badgeapisettings.json`; this
+file is copied to the output directory on every build and normally should not be
+user-configured.
 
 ### Government Cloud
 
@@ -122,6 +125,7 @@ The app will walk you through each step interactively, prompting for a badge ID 
 BadgeReleaseDemo/
 ├── Program.cs                          # Main orchestration — runs the 14-step flow
 ├── appsettings.json                    # App ID, tenant, and service endpoints
+├── badgeapisettings.json               # App-owned V1 and V2 badge API routes
 │
 ├── Auth/
 │   └── AuthHelper.cs                   # MSAL interactive auth + JWT-bearer device token flow
@@ -165,11 +169,27 @@ The printer authenticates using a certificate-based JWT-bearer flow:
 
 ## Badge API Reference
 
-The Badge API is a REST endpoint on the Universal Print IPP Service:
+The default V2 Badge API is a REST endpoint on the Universal Print IPP Service. It
+keeps the badge ID in the request body instead of the URL:
 
 ```
-GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}
+POST https://print.print.microsoft.com/api/v2.0/badges/lookup
 Authorization: Bearer {printer-device-token}
+```
+
+**Request body:**
+```json
+{
+  "badgeId": "123",
+  "bypassCache": false
+}
+```
+
+Run the demo with `--use-v1-badge-api` to use the legacy
+`GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}` endpoint instead:
+
+```powershell
+dotnet run -- --use-v1-badge-api
 ```
 
 **Success response (200 OK):**

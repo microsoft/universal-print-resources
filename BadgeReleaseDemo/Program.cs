@@ -30,7 +30,8 @@ public class Program
         ConsoleHelper.WriteHeader("🏷️  Universal Print — Badge Release Demo");
 
         // Load configuration
-        var config = LoadConfiguration();
+        var config = LoadConfiguration("appsettings.json");
+        var badgeApiConfig = LoadConfiguration("badgeapisettings.json");
         var appId = config.GetProperty("AppId").GetString()!;
         var tenantId = config.TryGetProperty("Tenant", out var tid) ? tid.GetString() ?? string.Empty : string.Empty;
         var graphBaseUrl = config.GetProperty("GraphBaseUrl").GetString()!;
@@ -38,7 +39,10 @@ public class Program
         var registrationBaseUrl = config.GetProperty("RegistrationBaseUrl").GetString()!;
         var ippServiceBaseUrl = config.GetProperty("IppServiceBaseUrl").GetString()!;
         var ippServicePrinterPath = config.GetProperty("IppServicePrinterPath").GetString()!;
-        var badgesApiPath = config.GetProperty("BadgesApiPath").GetString()!;
+        var badgesV1ApiPath = badgeApiConfig.GetProperty("BadgesV1ApiPath").GetString()!;
+        var badgesV2ApiPath = badgeApiConfig.GetProperty("BadgesV2ApiPath").GetString()!;
+        var useV1BadgeApi = args.Any(
+            arg => string.Equals(arg, "--use-v1-badge-api", StringComparison.OrdinalIgnoreCase));
 
         if (appId == "YOUR_APP_ID_HERE" || tenantId == "YOUR_TENANT_HERE")
         {
@@ -53,7 +57,12 @@ public class Program
         using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl);
         using var jobSubmission = new PrintJobSubmission(graphBaseUrl);
         using var ippClient = new PrinterIppClient(
-            ippServiceBaseUrl, ippServicePrinterPath, badgesApiPath, auth.RefreshPrinterTokenAsync);
+            ippServiceBaseUrl,
+            ippServicePrinterPath,
+            badgesV1ApiPath,
+            badgesV2ApiPath,
+            useV1BadgeApi,
+            auth.RefreshPrinterTokenAsync);
 
 
         string printerId = string.Empty;
@@ -434,13 +443,15 @@ public class Program
         }
     }
 
-    private static JsonElement LoadConfiguration()
+    private static JsonElement LoadConfiguration(string fileName)
     {
-        var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        var configPath = Path.Combine(AppContext.BaseDirectory, fileName);
 
         if (!File.Exists(configPath))
         {
-            throw new FileNotFoundException("appsettings.json not found. Make sure it's in the output directory.", configPath);
+            throw new FileNotFoundException(
+                $"{fileName} not found. Make sure it's in the output directory.",
+                configPath);
         }
 
         var json = File.ReadAllText(configPath);
