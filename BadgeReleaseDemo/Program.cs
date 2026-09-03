@@ -38,7 +38,9 @@ public class Program
         var registrationBaseUrl = config.GetProperty("RegistrationBaseUrl").GetString()!;
         var ippServiceBaseUrl = config.GetProperty("IppServiceBaseUrl").GetString()!;
         var ippServicePrinterPath = config.GetProperty("IppServicePrinterPath").GetString()!;
-        var badgesApiPath = config.GetProperty("BadgesApiPath").GetString()!;
+        var badgesV1ApiPath = config.GetProperty("BadgesV1ApiPath").GetString()!;
+        var badgesV2ApiPath = config.GetProperty("BadgesV2ApiPath").GetString()!;
+        var useV1BadgeApi = config.GetProperty("UseV1BadgeApi").GetBoolean();
 
         if (appId == "YOUR_APP_ID_HERE" || tenantId == "YOUR_TENANT_HERE")
         {
@@ -53,7 +55,12 @@ public class Program
         using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl);
         using var jobSubmission = new PrintJobSubmission(graphBaseUrl);
         using var ippClient = new PrinterIppClient(
-            ippServiceBaseUrl, ippServicePrinterPath, badgesApiPath, auth.RefreshPrinterTokenAsync);
+            ippServiceBaseUrl,
+            ippServicePrinterPath,
+            badgesV1ApiPath,
+            badgesV2ApiPath,
+            useV1BadgeApi,
+            auth.RefreshPrinterTokenAsync);
 
 
         string printerId = string.Empty;

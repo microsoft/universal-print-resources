@@ -4,6 +4,8 @@
 
 using System.Diagnostics;
 using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using BadgeReleaseDemo.Helpers;
 
 namespace BadgeReleaseDemo.IppOperations;
@@ -19,7 +21,9 @@ public class PrinterIppClient : IDisposable
 
     private readonly string ippServiceBaseUrl;
     private readonly string ippServicePrinterPath;
-    private readonly string badgesApiPath;
+    private readonly string badgesV1ApiPath;
+    private readonly string badgesV2ApiPath;
+    private readonly bool useV1BadgeApi;
     private readonly HttpClient httpClient;
     private readonly Func<Task<string>>? refreshPrinterToken;
     private int requestIdCounter;
@@ -27,12 +31,16 @@ public class PrinterIppClient : IDisposable
     public PrinterIppClient(
         string ippServiceBaseUrl,
         string ippServicePrinterPath,
-        string badgesApiPath,
+        string badgesV1ApiPath,
+        string badgesV2ApiPath,
+        bool useV1BadgeApi,
         Func<Task<string>>? refreshPrinterToken = null)
     {
         this.ippServiceBaseUrl = ippServiceBaseUrl.TrimEnd('/');
         this.ippServicePrinterPath = ippServicePrinterPath;
-        this.badgesApiPath = badgesApiPath;
+        this.badgesV1ApiPath = badgesV1ApiPath;
+        this.badgesV2ApiPath = badgesV2ApiPath;
+        this.useV1BadgeApi = useV1BadgeApi;
         this.refreshPrinterToken = refreshPrinterToken;
         httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
     }
@@ -47,14 +55,13 @@ public class PrinterIppClient : IDisposable
 
     /// <summary>
     /// Calls the IPPService BadgesController to resolve a badge ID to a user.
-    /// GET /api/v1.0/badges/{badgeId}
+    /// Uses V2 by default, with V1 available for compatibility.
     /// Returns (badgeId, userUri, userId, userIdPresent) or null if not found.
     /// </summary>
     public async Task<(string BadgeId, string UserUri, string? UserId, bool UserIdPresent)?> ResolveBadgeAsync(
         string printerToken, string badgeId)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get,
-            $"{ippServiceBaseUrl}{badgesApiPath}/{Uri.EscapeDataString(badgeId)}");
+        using var request = CreateBadgeLookupRequest(badgeId);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", printerToken);
 
         var response = await httpClient.SendAsync(request);
@@ -70,15 +77,35 @@ public class PrinterIppClient : IDisposable
             throw new HttpRequestException($"Badge resolution failed: {response.StatusCode} - {body}");
         }
 
-        var doc = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(body);
+        var doc = JsonSerializer.Deserialize<JsonElement>(body);
         var resolvedBadgeId = doc.GetProperty("badgeId").GetString()!;
         var userUri = doc.GetProperty("userURI").GetString()!;
         var userIdPresent = doc.TryGetProperty("userId", out var uidProp);
-        string? userId = userIdPresent && uidProp.ValueKind != System.Text.Json.JsonValueKind.Null
+        string? userId = userIdPresent && uidProp.ValueKind != JsonValueKind.Null
             ? uidProp.GetString()
             : null;
 
         return (resolvedBadgeId, userUri, userId, userIdPresent);
+    }
+
+    private HttpRequestMessage CreateBadgeLookupRequest(string badgeId)
+    {
+        if (useV1BadgeApi)
+        {
+            return new HttpRequestMessage(HttpMethod.Get,
+                $"{ippServiceBaseUrl}{badgesV1ApiPath}/{Uri.EscapeDataString(badgeId)}");
+        }
+
+        var requestBody = JsonSerializer.Serialize(new
+        {
+            badgeId,
+            bypassCache = false
+        });
+
+        return new HttpRequestMessage(HttpMethod.Post, $"{ippServiceBaseUrl}{badgesV2ApiPath}")
+        {
+            Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
+        };
     }
 
     /// <summary>
