@@ -25,7 +25,7 @@ The app walks through the complete lifecycle interactively:
 | 5. **Add badge** | Map a user-provided badge ID to the signed-in user | `POST graph.print.microsoft.com/v1.0/print/badgeCollections/{id}/badges` |
 | 6. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
 | 7. **Acquire printer token** | Obtain a device token for the printer via JWT-bearer flow | `POST {deviceTokenUrl}` |
-| 8. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `GET print.print.microsoft.com/api/v1.0/badges/{badgeId}` |
+| 8. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `POST print.print.microsoft.com/api/v2.0/badges/lookup` |
 | 9. **Get-Jobs** | Find fetchable jobs for the resolved user (IPP) | IPP Get-Jobs |
 | 10. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
 | 11. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
@@ -89,7 +89,8 @@ Edit `appsettings.json`:
 ```json
 {
   "AppId": "YOUR_APP_ID_HERE",
-  "Tenant": "YOUR_TENANT_HERE"
+  "Tenant": "YOUR_TENANT_HERE",
+  "UseV1BadgeApi": false
 }
 ```
 
@@ -97,6 +98,7 @@ Edit `appsettings.json`:
 |---------|-------------|---------|
 | `AppId` | Your Entra ID app registration client ID (GUID) | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
 | `Tenant` | Your tenant domain or GUID | `contoso.onmicrosoft.com` or a tenant GUID |
+| `UseV1BadgeApi` | Use the legacy V1 badge lookup API instead of the default V2 API | `false` |
 
 The remaining settings point to commercial production Universal Print endpoints.
 
@@ -165,12 +167,24 @@ The printer authenticates using a certificate-based JWT-bearer flow:
 
 ## Badge API Reference
 
-The Badge API is a REST endpoint on the Universal Print IPP Service:
+The default V2 Badge API is a REST endpoint on the Universal Print IPP Service. It
+keeps the badge ID in the request body instead of the URL:
 
 ```
-GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}
+POST https://print.print.microsoft.com/api/v2.0/badges/lookup
 Authorization: Bearer {printer-device-token}
 ```
+
+**Request body:**
+```json
+{
+  "badgeId": "123",
+  "bypassCache": false
+}
+```
+
+Set `UseV1BadgeApi` to `true` in `appsettings.json` to use the legacy
+`GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}` endpoint instead.
 
 **Success response (200 OK):**
 ```json
