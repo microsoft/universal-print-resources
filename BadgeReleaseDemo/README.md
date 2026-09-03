@@ -89,8 +89,7 @@ Edit `appsettings.json`:
 ```json
 {
   "AppId": "YOUR_APP_ID_HERE",
-  "Tenant": "YOUR_TENANT_HERE",
-  "UseV1BadgeApi": false
+  "Tenant": "YOUR_TENANT_HERE"
 }
 ```
 
@@ -98,9 +97,11 @@ Edit `appsettings.json`:
 |---------|-------------|---------|
 | `AppId` | Your Entra ID app registration client ID (GUID) | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
 | `Tenant` | Your tenant domain or GUID | `contoso.onmicrosoft.com` or a tenant GUID |
-| `UseV1BadgeApi` | Use the legacy V1 badge lookup API instead of the default V2 API | `false` |
 
 The remaining settings point to commercial production Universal Print endpoints.
+Badge API route versions are maintained by the demo in `badgeapisettings.json`; this
+file is copied to the output directory on every build and normally should not be
+user-configured.
 
 ### Government Cloud
 
@@ -124,6 +125,7 @@ The app will walk you through each step interactively, prompting for a badge ID 
 BadgeReleaseDemo/
 ├── Program.cs                          # Main orchestration — runs the 14-step flow
 ├── appsettings.json                    # App ID, tenant, and service endpoints
+├── badgeapisettings.json               # App-owned V1 and V2 badge API routes
 │
 ├── Auth/
 │   └── AuthHelper.cs                   # MSAL interactive auth + JWT-bearer device token flow
@@ -183,8 +185,12 @@ Authorization: Bearer {printer-device-token}
 }
 ```
 
-Set `UseV1BadgeApi` to `true` in `appsettings.json` to use the legacy
-`GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}` endpoint instead.
+Run the demo with `--use-v1-badge-api` to use the legacy
+`GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}` endpoint instead:
+
+```powershell
+dotnet run -- --use-v1-badge-api
+```
 
 **Success response (200 OK):**
 ```json

@@ -63,6 +63,7 @@ public class PrinterIppClient : IDisposable
     {
         using var request = CreateBadgeLookupRequest(badgeId);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", printerToken);
+        await WriteBadgeLookupRequestAsync(request);
 
         var response = await httpClient.SendAsync(request);
         var body = await response.Content.ReadAsStringAsync();
@@ -86,6 +87,16 @@ public class PrinterIppClient : IDisposable
             : null;
 
         return (resolvedBadgeId, userUri, userId, userIdPresent);
+    }
+
+    private static async Task WriteBadgeLookupRequestAsync(HttpRequestMessage request)
+    {
+        ConsoleHelper.WriteInfo($"Badge lookup request: {request.Method} {request.RequestUri}");
+
+        if (request.Content != null)
+        {
+            ConsoleHelper.WriteInfo($"Badge lookup request body: {await request.Content.ReadAsStringAsync()}");
+        }
     }
 
     private HttpRequestMessage CreateBadgeLookupRequest(string badgeId)
