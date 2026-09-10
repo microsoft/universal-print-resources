@@ -46,9 +46,8 @@ public class Program
             return 0;
         });
 
-        var badgesCommand = new Command("badges", "Manage badge collections and mappings");
         rootCommand.Subcommands.Add(demoCommand);
-        rootCommand.Subcommands.Add(badgesCommand);
+        rootCommand.Subcommands.Add(BadgeManagementCommands.Create());
 
         return await rootCommand.Parse(args).InvokeAsync();
     }
