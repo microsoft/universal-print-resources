@@ -26,6 +26,16 @@ public class BadgeManagement : IDisposable
 
     public void Dispose() => httpClient.Dispose();
 
+    public async Task<IReadOnlyList<BadgeCollection>> ListBadgeCollectionsAsync(string accessToken)
+    {
+        using var request = CreateRequest(HttpMethod.Get, $"{graphBaseUrl}/print/badgeCollections", accessToken);
+        using var response = await httpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        EnsureSuccess(response, responseBody, "list badge collections");
+        return ParseList(responseBody, ParseBadgeCollection, "badge collections");
+    }
+
     /// <summary>
     /// Creates a badge collection. Handles 409 Conflict if it already exists.
     /// Returns the actual collection ID from the service.
@@ -39,10 +49,9 @@ public class BadgeManagement : IDisposable
     /// </remarks>
     public async Task<string> CreateBadgeCollectionAsync(string accessToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, $"{graphBaseUrl}/print/badgeCollections");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var request = CreateRequest(HttpMethod.Post, $"{graphBaseUrl}/print/badgeCollections", accessToken);
         request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
-        var response = await httpClient.SendAsync(request);
+        using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode == HttpStatusCode.Conflict)
@@ -93,10 +102,11 @@ public class BadgeManagement : IDisposable
 
         while (DateTime.UtcNow - startTime < maxWait)
         {
-            using var request = new HttpRequestMessage(
-                HttpMethod.Get, $"{graphBaseUrl}/print/operations/{Uri.EscapeDataString(operationId)}");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            var response = await httpClient.SendAsync(request);
+            using var request = CreateRequest(
+                HttpMethod.Get,
+                $"{graphBaseUrl}/print/operations/{Uri.EscapeDataString(operationId)}",
+                accessToken);
+            using var response = await httpClient.SendAsync(request);
             var responseBody = await response.Content.ReadAsStringAsync();
 
             if (!response.IsSuccessStatusCode)
@@ -164,60 +174,56 @@ public class BadgeManagement : IDisposable
 
     private async Task<string?> TryGetBadgeCollectionIdAsync(string accessToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, $"{graphBaseUrl}/print/badgeCollections");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        var response = await httpClient.SendAsync(request);
+        var collections = await ListBadgeCollectionsAsync(accessToken);
+        return collections.FirstOrDefault()?.Id;
+    }
+
+    public async Task<bool> DeleteBadgeCollectionAsync(string accessToken, string collectionId)
+    {
+        using var request = CreateRequest(
+            HttpMethod.Delete,
+            $"{graphBaseUrl}/print/badgeCollections/{Uri.EscapeDataString(collectionId)}",
+            accessToken);
+        using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            return null;
+            return false;
         }
 
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException(
-                $"Failed to list badge collections: {response.StatusCode} - {responseBody}");
-        }
-
-        var listDoc = JsonSerializer.Deserialize<JsonElement>(responseBody);
-        if (!listDoc.TryGetProperty("value", out var collections) || collections.ValueKind != JsonValueKind.Array)
-        {
-            throw new InvalidOperationException("Badge collections response did not include a valid value array.");
-        }
-
-        foreach (var collection in collections.EnumerateArray())
-        {
-            if (collection.TryGetProperty("id", out var idProperty))
-            {
-                var collectionId = idProperty.GetString();
-                if (!string.IsNullOrWhiteSpace(collectionId))
-                {
-                    return collectionId;
-                }
-            }
-        }
-
-        return null;
+        EnsureSuccess(response, responseBody, "delete badge collection");
+        return true;
     }
 
     /// <summary>
     /// Adds a badge to the collection with the given badge ID and user UPN.
     /// </summary>
-    public async Task AddBadgeAsync(string accessToken, string collectionId, string badgeId, string upn)
+    public async Task<BadgeMapping> AddBadgeAsync(
+        string accessToken,
+        string collectionId,
+        string badgeId,
+        string upn,
+        string? userId = null)
     {
-        var requestBody = new
+        var requestBody = new Dictionary<string, string>
         {
-            id = badgeId,
-            upn
+            ["id"] = badgeId,
+            ["upn"] = upn
         };
 
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            requestBody["userId"] = userId;
+        }
+
         var json = JsonSerializer.Serialize(requestBody);
-        using var request = new HttpRequestMessage(HttpMethod.Post,
-            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var request = CreateRequest(
+            HttpMethod.Post,
+            $"{graphBaseUrl}/print/badgeCollections/{Uri.EscapeDataString(collectionId)}/badges",
+            accessToken);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
-        var response = await httpClient.SendAsync(request);
+        using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode == HttpStatusCode.Conflict)
@@ -226,26 +232,170 @@ public class BadgeManagement : IDisposable
                 $"Badge '{badgeId}' already exists. Choose a unique badge ID to avoid overwriting an existing user mapping.");
         }
 
-        if (!response.IsSuccessStatusCode)
+        EnsureSuccess(response, responseBody, "add badge");
+        return ParseBadgeMapping(JsonSerializer.Deserialize<JsonElement>(responseBody));
+    }
+
+    public async Task<BadgeMappingListResult> ListBadgesAsync(string accessToken, string collectionId)
+    {
+        using var request = CreateRequest(
+            HttpMethod.Get,
+            $"{graphBaseUrl}/print/badgeCollections/{Uri.EscapeDataString(collectionId)}/badges",
+            accessToken);
+        using var response = await httpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        if (response.StatusCode == HttpStatusCode.NotImplemented)
         {
-            throw new HttpRequestException($"Failed to add badge: {response.StatusCode} - {responseBody}");
+            return new BadgeMappingListResult(false, Array.Empty<BadgeMapping>());
         }
+
+        EnsureSuccess(response, responseBody, "list badges");
+        return new BadgeMappingListResult(
+            true,
+            ParseList(responseBody, ParseBadgeMapping, "badges"));
+    }
+
+    public async Task<BadgeMapping?> GetBadgeAsync(string accessToken, string collectionId, string badgeId)
+    {
+        using var request = CreateBadgeItemRequest(HttpMethod.Get, accessToken, collectionId, badgeId);
+        using var response = await httpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        EnsureSuccess(response, responseBody, "get badge");
+        return ParseBadgeMapping(JsonSerializer.Deserialize<JsonElement>(responseBody));
+    }
+
+    public async Task<BadgeMapping> UpdateBadgeAsync(
+        string accessToken,
+        string collectionId,
+        string badgeId,
+        string? upn,
+        string? userId)
+    {
+        var requestBody = new Dictionary<string, string>();
+        if (!string.IsNullOrWhiteSpace(upn))
+        {
+            requestBody["upn"] = upn;
+        }
+
+        if (!string.IsNullOrWhiteSpace(userId))
+        {
+            requestBody["userId"] = userId;
+        }
+
+        if (requestBody.Count == 0)
+        {
+            throw new ArgumentException("At least one of UPN or user ID must be provided.");
+        }
+
+        using var request = CreateBadgeItemRequest(HttpMethod.Patch, accessToken, collectionId, badgeId);
+        request.Content = new StringContent(
+            JsonSerializer.Serialize(requestBody),
+            Encoding.UTF8,
+            "application/json");
+        using var response = await httpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        EnsureSuccess(response, responseBody, "update badge");
+        return ParseBadgeMapping(JsonSerializer.Deserialize<JsonElement>(responseBody));
     }
 
     /// <summary>
     /// Deletes a badge from the collection.
     /// </summary>
-    public async Task DeleteBadgeAsync(string accessToken, string collectionId, string badgeId)
+    public async Task<bool> DeleteBadgeAsync(string accessToken, string collectionId, string badgeId)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Delete,
-            $"{graphBaseUrl}/print/badgeCollections/{collectionId}/badges/{Uri.EscapeDataString(badgeId)}");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var request = CreateBadgeItemRequest(HttpMethod.Delete, accessToken, collectionId, badgeId);
+        using var response = await httpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
 
-        var response = await httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode && response.StatusCode != HttpStatusCode.NotFound)
+        if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            var body = await response.Content.ReadAsStringAsync();
-            ConsoleHelper.WriteWarning($"Failed to delete badge: {response.StatusCode} - {body}");
+            return false;
+        }
+
+        EnsureSuccess(response, responseBody, "delete badge");
+        return true;
+    }
+
+    private HttpRequestMessage CreateBadgeItemRequest(
+        HttpMethod method,
+        string accessToken,
+        string collectionId,
+        string badgeId) =>
+        CreateRequest(
+            method,
+            $"{graphBaseUrl}/print/badgeCollections/{Uri.EscapeDataString(collectionId)}/badges/{Uri.EscapeDataString(badgeId)}",
+            accessToken);
+
+    private static HttpRequestMessage CreateRequest(HttpMethod method, string requestUri, string accessToken)
+    {
+        var request = new HttpRequestMessage(method, requestUri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        return request;
+    }
+
+    private static void EnsureSuccess(HttpResponseMessage response, string responseBody, string operation)
+    {
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Failed to {operation}: {response.StatusCode} - {responseBody}",
+                null,
+                response.StatusCode);
         }
     }
+
+    private static IReadOnlyList<T> ParseList<T>(
+        string responseBody,
+        Func<JsonElement, T> parseItem,
+        string resourceName)
+    {
+        var document = JsonSerializer.Deserialize<JsonElement>(responseBody);
+        if (!document.TryGetProperty("value", out var items) || items.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidOperationException(
+                $"{resourceName} response did not include a valid value array.");
+        }
+
+        return items.EnumerateArray().Select(parseItem).ToArray();
+    }
+
+    private static BadgeCollection ParseBadgeCollection(JsonElement collection)
+    {
+        var id = collection.GetProperty("id").GetString();
+        return !string.IsNullOrWhiteSpace(id)
+            ? new BadgeCollection(id)
+            : throw new InvalidOperationException("Badge collection response contained an empty ID.");
+    }
+
+    private static BadgeMapping ParseBadgeMapping(JsonElement badge)
+    {
+        var id = badge.GetProperty("id").GetString();
+        var upn = badge.GetProperty("upn").GetString();
+
+        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(upn))
+        {
+            throw new InvalidOperationException("Badge response contained an empty ID or UPN.");
+        }
+
+        var userId = badge.TryGetProperty("userId", out var userIdProperty) &&
+                     userIdProperty.ValueKind != JsonValueKind.Null
+            ? userIdProperty.GetString()
+            : null;
+
+        return new BadgeMapping(id, upn, userId);
+    }
 }
+
+public sealed record BadgeCollection(string Id);
+
+public sealed record BadgeMapping(string Id, string Upn, string? UserId);
+
+public sealed record BadgeMappingListResult(bool IsSupported, IReadOnlyList<BadgeMapping> Badges);
