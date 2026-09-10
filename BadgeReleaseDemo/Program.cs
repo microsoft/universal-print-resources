@@ -2,6 +2,7 @@
 //     Copyright (c) Microsoft Corporation. All rights reserved.
 // </copyright>
 
+using System.CommandLine;
 using System.Text.Json;
 using BadgeReleaseDemo.Auth;
 using BadgeReleaseDemo.GraphApi;
@@ -23,10 +24,43 @@ namespace BadgeReleaseDemo;
 /// </summary>
 public class Program
 {
-    public static async Task Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+        var rootUseV1Option = CreateUseV1BadgeApiOption();
+        var rootCommand = new RootCommand("Universal Print Badge Release demo and badge management utility");
+        rootCommand.Options.Add(rootUseV1Option);
+        rootCommand.SetAction(async parseResult =>
+        {
+            await RunDemoAsync(parseResult.GetValue(rootUseV1Option));
+            return 0;
+        });
+
+        var demoUseV1Option = CreateUseV1BadgeApiOption();
+        var demoCommand = new Command("demo", "Run the full interactive badge release workflow");
+        demoCommand.Options.Add(demoUseV1Option);
+        demoCommand.SetAction(async parseResult =>
+        {
+            await RunDemoAsync(parseResult.GetValue(demoUseV1Option));
+            return 0;
+        });
+
+        var badgesCommand = new Command("badges", "Manage badge collections and mappings");
+        rootCommand.Subcommands.Add(demoCommand);
+        rootCommand.Subcommands.Add(badgesCommand);
+
+        return await rootCommand.Parse(args).InvokeAsync();
+    }
+
+    private static Option<bool> CreateUseV1BadgeApiOption() =>
+        new("--use-v1-badge-api")
+        {
+            Description = "Use the legacy V1 badge lookup API during the demo"
+        };
+
+    private static async Task RunDemoAsync(bool useV1BadgeApi)
+    {
         ConsoleHelper.WriteHeader("🏷️  Universal Print — Badge Release Demo");
 
         // Load configuration
@@ -41,9 +75,6 @@ public class Program
         var ippServicePrinterPath = config.GetProperty("IppServicePrinterPath").GetString()!;
         var badgesV1ApiPath = badgeApiConfig.GetProperty("BadgesV1ApiPath").GetString()!;
         var badgesV2ApiPath = badgeApiConfig.GetProperty("BadgesV2ApiPath").GetString()!;
-        var useV1BadgeApi = args.Any(
-            arg => string.Equals(arg, "--use-v1-badge-api", StringComparison.OrdinalIgnoreCase));
-
         if (appId == "YOUR_APP_ID_HERE" || tenantId == "YOUR_TENANT_HERE")
         {
             ConsoleHelper.WriteError("Please set your App ID and Tenant in appsettings.json before running this demo.");
