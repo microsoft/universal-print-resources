@@ -84,7 +84,8 @@ These permissions are granted to the app itself (not delegated) and appear as `r
 
 ## Configuration
 
-Edit `appsettings.json`:
+Build the app, then edit the generated `appsettings.json` beside the executable
+(for example, `bin\Debug\net8.0\appsettings.json`):
 
 ```json
 {
@@ -98,6 +99,11 @@ Edit `appsettings.json`:
 | `AppId` | Your Entra ID app registration client ID (GUID) | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
 | `Tenant` | Your tenant domain or GUID | `contoso.onmicrosoft.com` or a tenant GUID |
 
+Keep the checked-in `appsettings.json` placeholders unchanged so personal tenant
+values are not accidentally committed to this public repository. The generated
+configuration is normally preserved across subsequent builds. If the output
+directory is deleted or cleaned, configure the newly generated file again.
+
 The remaining settings point to commercial production Universal Print endpoints.
 Badge API route versions are maintained by the demo in `badgeapisettings.json`; this
 file is copied to the output directory on every build and normally should not be
@@ -109,12 +115,18 @@ Government cloud is not supported by this demo today. Badge Release APIs in this
 
 ## Build & Run
 
-1. Update `appsettings.json` with your Entra ID **Tenant** and **AppId** (from the app registration above).
-2. Build and run the full interactive demo:
+1. Build the app:
 
 ```powershell
 dotnet build
-dotnet run
+```
+
+2. Update `bin\Debug\net8.0\appsettings.json` with your Entra ID **Tenant** and
+   **AppId** (from the app registration above).
+3. Run the full interactive demo without rebuilding:
+
+```powershell
+dotnet run --no-build
 ```
 
 Running with no command is equivalent to `dotnet run -- demo`. The app walks through
@@ -257,6 +269,7 @@ The `userURI` (a `mailto:` URI) is then passed as the `requesting-user-uri` attr
 |---------|-------------|-----|
 | `403 Forbidden` on badge resolution | Missing `PrintBadges.Read` app permission, or tenant not enrolled in the Badge Release preview | Grant the permission and admin-consent it in the Azure portal. If the feature is not enabled, see the note below. |
 | `401 Unauthorized` on IPP operations | Printer device token expired | The demo acquires a fresh token; if it persists, re-run |
+| `404 Badge collection not found` when adding a badge after deleting and recreating a collection | Badge collection deletion and recreation can take time to settle across the service, even after the new collection reports that provisioning succeeded | Wait a few minutes, then retry adding the badge. Avoid repeatedly deleting and recreating collections during normal testing. |
 | No fetchable jobs found | Job not yet processed by the service | Wait a few seconds and retry; in production, printers poll |
 | `ServerErrorInternalError` on Update-Job-Status | Job may already be in a terminal state | Check the correlation headers in the console output and investigate server-side |
 | Cleanup fails to delete PDF | File locked by PDF viewer (e.g., Adobe) | Close the viewer, then delete manually |

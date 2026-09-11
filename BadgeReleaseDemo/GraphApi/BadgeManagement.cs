@@ -99,6 +99,7 @@ public class BadgeManagement : IDisposable
         var maxWait = TimeSpan.FromMinutes(10);
         var defaultDelay = TimeSpan.FromSeconds(5);
         var startTime = DateTime.UtcNow;
+        ConsoleHelper.WriteInfo($"Badge collection operation ID: {operationId}");
 
         while (DateTime.UtcNow - startTime < maxWait)
         {
@@ -116,10 +117,13 @@ public class BadgeManagement : IDisposable
             }
 
             var state = ParseOperationState(responseBody);
+            var displayState = string.IsNullOrWhiteSpace(state) ? "unknown" : state;
+            ConsoleHelper.WriteInfo($"Badge collection operation state: {displayState}");
 
             switch (state)
             {
                 case "succeeded":
+                    ConsoleHelper.WriteSuccess("Badge collection provisioning completed.");
                     return;
                 case "failed":
                     throw new InvalidOperationException(
@@ -127,6 +131,8 @@ public class BadgeManagement : IDisposable
             }
 
             var delay = response.Headers.RetryAfter?.Delta ?? defaultDelay;
+            ConsoleHelper.WriteProgress(
+                $"Badge collection provisioning is still in progress; retrying in {delay.TotalSeconds:0.#}s...");
             await Task.Delay(delay);
         }
 
