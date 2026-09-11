@@ -232,7 +232,7 @@ public class BadgeManagement : IDisposable
                 $"Badge '{badgeId}' already exists. Choose a unique badge ID to avoid overwriting an existing user mapping.");
         }
 
-        EnsureSuccess(response, responseBody, "add badge");
+        EnsureStatus(response, responseBody, HttpStatusCode.Created, "add badge");
         return ParseBadgeMapping(JsonSerializer.Deserialize<JsonElement>(responseBody));
     }
 
@@ -302,7 +302,7 @@ public class BadgeManagement : IDisposable
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
-        EnsureSuccess(response, responseBody, "update badge");
+        EnsureStatus(response, responseBody, HttpStatusCode.OK, "update badge");
         return ParseBadgeMapping(JsonSerializer.Deserialize<JsonElement>(responseBody));
     }
 
@@ -347,6 +347,21 @@ public class BadgeManagement : IDisposable
         {
             throw new HttpRequestException(
                 $"Failed to {operation}: {response.StatusCode} - {responseBody}",
+                null,
+                response.StatusCode);
+        }
+    }
+
+    private static void EnsureStatus(
+        HttpResponseMessage response,
+        string responseBody,
+        HttpStatusCode expectedStatus,
+        string operation)
+    {
+        if (response.StatusCode != expectedStatus)
+        {
+            throw new HttpRequestException(
+                $"Failed to {operation}: expected {expectedStatus}, received {response.StatusCode} - {responseBody}",
                 null,
                 response.StatusCode);
         }

@@ -321,7 +321,7 @@ public static class BadgeManagementCommands
         }
         catch (JsonException exception)
         {
-            ConsoleHelper.WriteError($"Invalid configuration JSON: {exception.Message}");
+            ConsoleHelper.WriteError($"The service returned invalid JSON: {exception.Message}");
             return 1;
         }
         catch (MsalException exception)
@@ -394,6 +394,15 @@ public static class BadgeManagementCommands
                 configPath);
         }
 
-        return JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(configPath));
+        try
+        {
+            return JsonSerializer.Deserialize<JsonElement>(File.ReadAllText(configPath));
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidOperationException(
+                $"appsettings.json contains invalid JSON: {exception.Message}",
+                exception);
+        }
     }
 }

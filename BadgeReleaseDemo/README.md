@@ -1,6 +1,6 @@
 # Badge Release Demo
 
-An interactive console application that demonstrates the full [Universal Print](https://learn.microsoft.com/universal-print/) badge release lifecycle — from printer registration and badge setup to badge-swipe-triggered job release.
+A console application that demonstrates the full [Universal Print](https://learn.microsoft.com/universal-print/) badge release lifecycle and provides focused commands for managing badge collections and mappings.
 
 > **⚠️ IMPORTANT DISCLAIMER:** This demo is provided for **educational purposes only and must not be used as is**. It is intended as a reference to help you build your own scripts and applications. Note that it registers real printers and shares against your tenant; the demo cleans these resources up at the end, but you are responsible for verifying nothing is left behind.
 
@@ -110,20 +110,58 @@ Government cloud is not supported by this demo today. Badge Release APIs in this
 ## Build & Run
 
 1. Update `appsettings.json` with your Entra ID **Tenant** and **AppId** (from the app registration above).
-2. Build and run:
+2. Build and run the full interactive demo:
 
 ```powershell
 dotnet build
 dotnet run
 ```
 
-The app will walk you through each step interactively, prompting for a badge ID and PDF file path. At the end, all created cloud resources (printer, share, badge) are automatically cleaned up.
+Running with no command is equivalent to `dotnet run -- demo`. The app walks through
+each step interactively, prompting for a badge ID and PDF file path. At the end, all
+created cloud resources (printer, share, badge) are automatically cleaned up.
+
+Use `dotnet run -- --help` to display all available commands.
+
+## Badge Management Commands
+
+Badge management commands acquire the delegated Universal Print token through the
+same interactive MSAL sign-in as the demo. You do not need to acquire or pass an
+access token separately.
+
+```powershell
+# Collections
+dotnet run -- badges collections list
+dotnet run -- badges collections create
+dotnet run -- badges collections delete --collection-id <collection-id>
+dotnet run -- badges collections delete --collection-id <collection-id> --force
+
+# Badge mappings
+dotnet run -- badges mappings list --collection-id <collection-id>
+dotnet run -- badges mappings get --collection-id <collection-id> --badge-id <badge-id>
+dotnet run -- badges mappings create --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn>
+dotnet run -- badges mappings create --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn> --user-id <user-id>
+dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --upn <new-upn>
+dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --user-id <new-user-id>
+dotnet run -- badges mappings delete --collection-id <collection-id> --badge-id <badge-id>
+```
+
+`--collection-id` may be omitted when the tenant has exactly one badge collection.
+When zero or multiple collections exist, the command reports the available next step
+instead of selecting a collection implicitly. Collection deletion prompts for
+confirmation unless `--force` is specified.
+
+The service may return `501 Not Implemented` when listing mappings. The CLI reports
+that limitation without treating it as an authentication or connectivity failure.
+
+CSV import is not currently included.
 
 ## Project Structure
 
 ```
 BadgeReleaseDemo/
-├── Program.cs                          # Main orchestration — runs the 14-step flow
+├── Program.cs                          # CLI root and full 14-step demo orchestration
+├── BadgeManagementCommands.cs         # Badge collection and mapping commands
 ├── appsettings.json                    # App ID, tenant, and service endpoints
 ├── badgeapisettings.json               # App-owned V1 and V2 badge API routes
 │
