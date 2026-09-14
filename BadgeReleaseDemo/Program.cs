@@ -28,6 +28,12 @@ public class Program
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+        var rootCommand = CreateRootCommand();
+        return await rootCommand.Parse(NormalizeArguments(args)).InvokeAsync();
+    }
+
+    internal static RootCommand CreateRootCommand()
+    {
         var rootCommand = new RootCommand("Universal Print Badge Release demo and badge management utility");
 
         var demoUseV1Option = CreateUseV1BadgeApiOption();
@@ -40,14 +46,14 @@ public class Program
 
         rootCommand.Subcommands.Add(demoCommand);
         rootCommand.Subcommands.Add(BadgeManagementCommands.Create());
+        return rootCommand;
+    }
 
-        var effectiveArgs = args.Length == 0 ||
+    internal static string[] NormalizeArguments(string[] args) =>
+        args.Length == 0 ||
             args.All(argument => argument == "--use-v1-badge-api")
             ? new[] { "demo" }.Concat(args).ToArray()
             : args;
-
-        return await rootCommand.Parse(effectiveArgs).InvokeAsync();
-    }
 
     private static Option<bool> CreateUseV1BadgeApiOption() =>
         new("--use-v1-badge-api")

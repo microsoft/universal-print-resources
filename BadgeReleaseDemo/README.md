@@ -121,6 +121,7 @@ Government cloud is not supported by this demo today. Badge Release APIs in this
 
 ```powershell
 dotnet build
+dotnet test BadgeReleaseDemo.sln
 ```
 
 2. Update `bin\Debug\net8.0\appsettings.json` with your Entra ID **Tenant** and
@@ -204,6 +205,11 @@ BadgeReleaseDemo/
 │
 └── Resources/
     └── SampleDocument.pdf              # Default test PDF (or supply your own)
+
+BadgeReleaseDemo.Tests/
+├── CommandLineTests.cs                 # Command routing and V1 option scope
+├── BadgeManagementTests.cs             # Collection polling and mapping update contracts
+└── PrinterIppClientTests.cs            # V1 and V2 badge lookup request shapes
 ```
 
 ## Authentication Flows

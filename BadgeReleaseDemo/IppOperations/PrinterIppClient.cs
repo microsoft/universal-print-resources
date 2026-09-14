@@ -34,7 +34,8 @@ public class PrinterIppClient : IDisposable
         string badgesV1ApiPath,
         string badgesV2ApiPath,
         bool useV1BadgeApi,
-        Func<Task<string>>? refreshPrinterToken = null)
+        Func<Task<string>>? refreshPrinterToken = null,
+        HttpMessageHandler? httpMessageHandler = null)
     {
         this.ippServiceBaseUrl = ippServiceBaseUrl.TrimEnd('/');
         this.ippServicePrinterPath = ippServicePrinterPath;
@@ -42,7 +43,10 @@ public class PrinterIppClient : IDisposable
         this.badgesV2ApiPath = badgesV2ApiPath;
         this.useV1BadgeApi = useV1BadgeApi;
         this.refreshPrinterToken = refreshPrinterToken;
-        httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        httpClient = httpMessageHandler == null
+            ? new HttpClient()
+            : new HttpClient(httpMessageHandler);
+        httpClient.Timeout = TimeSpan.FromMinutes(5);
     }
 
     public void Dispose() => httpClient.Dispose();

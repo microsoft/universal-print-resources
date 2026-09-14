@@ -22,10 +22,12 @@ public class BadgeManagement : IDisposable
     private readonly string graphBaseUrl;
     private readonly HttpClient httpClient;
 
-    public BadgeManagement(string graphBaseUrl)
+    public BadgeManagement(string graphBaseUrl, HttpMessageHandler? httpMessageHandler = null)
     {
         this.graphBaseUrl = graphBaseUrl;
-        httpClient = new HttpClient();
+        httpClient = httpMessageHandler == null
+            ? new HttpClient()
+            : new HttpClient(httpMessageHandler);
     }
 
     public void Dispose() => httpClient.Dispose();
