@@ -7,6 +7,7 @@
     <AssemblyName>BadgeReleaseDemo</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <OverwriteReadOnlyFiles>true</OverwriteReadOnlyFiles>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,5 +29,14 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <Target Name="SetSettingsFilePermissions" AfterTargets="CopyFilesToOutputDirectory">
+    <Exec
+      Condition="'$(OS)' == 'Windows_NT'"
+      Command="attrib -R &quot;$(TargetDir)appsettings.json&quot; &amp;&amp; attrib +R &quot;$(TargetDir)badgeapisettings.json&quot;" />
+    <Exec
+      Condition="'$(OS)' != 'Windows_NT'"
+      Command="chmod u+w &quot;$(TargetDir)appsettings.json&quot; &amp;&amp; chmod a-w &quot;$(TargetDir)badgeapisettings.json&quot;" />
+  </Target>
 
 </Project>

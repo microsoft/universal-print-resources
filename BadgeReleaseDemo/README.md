@@ -107,7 +107,9 @@ directory is deleted or cleaned, configure the newly generated file again.
 The remaining settings point to commercial production Universal Print endpoints.
 Badge API route versions are maintained by the demo in `badgeapisettings.json`; this
 file is copied to the output directory on every build and normally should not be
-user-configured.
+user-configured. Builds leave generated `appsettings.json` writable and mark generated
+`badgeapisettings.json` read-only. Subsequent builds can replace the read-only route
+file and then restore that protection.
 
 ### Government Cloud
 
