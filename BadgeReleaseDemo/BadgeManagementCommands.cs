@@ -101,7 +101,7 @@ public static class BadgeManagementCommands
     private static Command CreateListMappingsCommand()
     {
         var collectionIdOption = CreateCollectionIdOption();
-        var command = new Command("list", "List badge mappings");
+        var command = new Command("list", "List badge mappings (not implemented by the service yet)");
         command.Options.Add(collectionIdOption);
         command.SetAction(parseResult => RunAuthenticatedAsync(async (client, token) =>
         {
@@ -191,10 +191,7 @@ public static class BadgeManagementCommands
     {
         var collectionIdOption = CreateCollectionIdOption();
         var badgeIdOption = CreateRequiredOption("--badge-id", "Badge ID to update");
-        var upnOption = new Option<string?>("--upn")
-        {
-            Description = "New user principal name"
-        };
+        var upnOption = CreateRequiredOption("--upn", "User principal name for the updated badge mapping");
         var userIdOption = CreateUserIdOption();
         var command = new Command("update", "Update a badge mapping");
         command.Options.Add(collectionIdOption);
@@ -204,13 +201,8 @@ public static class BadgeManagementCommands
         AddNonEmptyValidator(command, badgeIdOption);
         command.SetAction(async parseResult =>
         {
-            var upn = parseResult.GetValue(upnOption);
+            var upn = parseResult.GetRequiredValue(upnOption);
             var userId = parseResult.GetValue(userIdOption);
-            if (string.IsNullOrWhiteSpace(upn))
-            {
-                ConsoleHelper.WriteError("--upn is required when updating a badge mapping.");
-                return 1;
-            }
 
             return await RunAuthenticatedAsync(async (client, token) =>
             {

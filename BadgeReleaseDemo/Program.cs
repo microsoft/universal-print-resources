@@ -34,7 +34,8 @@ public class Program
 
     internal static RootCommand CreateRootCommand()
     {
-        var rootCommand = new RootCommand("Universal Print Badge Release demo and badge management utility");
+        var rootCommand = new RootCommand(
+            "Universal Print Badge Release demo and badge management utility. Runs the full demo when no command is specified.");
 
         var demoUseV1Option = CreateUseV1BadgeApiOption();
         var demoCommand = new Command("demo", "Run the full interactive badge release workflow");

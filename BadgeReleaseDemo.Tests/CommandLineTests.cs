@@ -28,4 +28,15 @@ public class CommandLineTests
 
         Assert.Equal(1, await parseResult.InvokeAsync());
     }
+
+    [Fact]
+    public void MappingUpdate_RequiresUpnDuringParsing()
+    {
+        var parseResult = Program.CreateRootCommand().Parse(
+            ["badges", "mappings", "update", "--badge-id", "badge-1"]);
+
+        Assert.Contains(
+            parseResult.Errors,
+            error => error.Message.Contains("--upn", StringComparison.Ordinal));
+    }
 }
