@@ -109,8 +109,7 @@ public class PrinterIppClient : IDisposable
 
         var requestBody = JsonSerializer.Serialize(new
         {
-            badgeId,
-            bypassCache = false
+            badgeId
         });
 
         return new HttpRequestMessage(HttpMethod.Post, $"{ippServiceBaseUrl}{badgesV2ApiPath}")

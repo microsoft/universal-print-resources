@@ -28,31 +28,31 @@ public class Program
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
-        var rootUseV1Option = CreateUseV1BadgeApiOption();
         var rootCommand = new RootCommand("Universal Print Badge Release demo and badge management utility");
-        rootCommand.Options.Add(rootUseV1Option);
-        rootCommand.SetAction(async parseResult =>
-        {
-            return await RunDemoAsync(parseResult.GetValue(rootUseV1Option));
-        });
 
+        var demoUseV1Option = CreateUseV1BadgeApiOption();
         var demoCommand = new Command("demo", "Run the full interactive badge release workflow");
+        demoCommand.Options.Add(demoUseV1Option);
         demoCommand.SetAction(async parseResult =>
         {
-            return await RunDemoAsync(parseResult.GetValue(rootUseV1Option));
+            return await RunDemoAsync(parseResult.GetValue(demoUseV1Option));
         });
 
         rootCommand.Subcommands.Add(demoCommand);
         rootCommand.Subcommands.Add(BadgeManagementCommands.Create());
 
-        return await rootCommand.Parse(args).InvokeAsync();
+        var effectiveArgs = args.Length == 0 ||
+            args.All(argument => argument == "--use-v1-badge-api")
+            ? new[] { "demo" }.Concat(args).ToArray()
+            : args;
+
+        return await rootCommand.Parse(effectiveArgs).InvokeAsync();
     }
 
     private static Option<bool> CreateUseV1BadgeApiOption() =>
         new("--use-v1-badge-api")
         {
-            Description = "Use the legacy V1 badge lookup API during the demo",
-            Recursive = true
+            Description = "Use the legacy V1 badge lookup API during the demo"
         };
 
     private static async Task<int> RunDemoAsync(bool useV1BadgeApi)

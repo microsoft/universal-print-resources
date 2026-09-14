@@ -120,7 +120,7 @@ public class BadgeManagement : IDisposable
             var displayState = string.IsNullOrWhiteSpace(state) ? "unknown" : state;
             ConsoleHelper.WriteInfo($"Badge collection operation state: {displayState}");
 
-            switch (state)
+            switch (state?.ToLowerInvariant())
             {
                 case "succeeded":
                     ConsoleHelper.WriteSuccess("Badge collection provisioning completed.");
@@ -281,23 +281,22 @@ public class BadgeManagement : IDisposable
         string accessToken,
         string collectionId,
         string badgeId,
-        string? upn,
+        string upn,
         string? userId)
     {
-        var requestBody = new Dictionary<string, string>();
-        if (!string.IsNullOrWhiteSpace(upn))
+        if (string.IsNullOrWhiteSpace(upn))
         {
-            requestBody["upn"] = upn;
+            throw new ArgumentException("UPN must be provided.", nameof(upn));
         }
+
+        var requestBody = new Dictionary<string, string>
+        {
+            ["upn"] = upn
+        };
 
         if (!string.IsNullOrWhiteSpace(userId))
         {
             requestBody["userId"] = userId;
-        }
-
-        if (requestBody.Count == 0)
-        {
-            throw new ArgumentException("At least one of UPN or user ID must be provided.");
         }
 
         using var request = CreateBadgeItemRequest(HttpMethod.Patch, accessToken, collectionId, badgeId);
