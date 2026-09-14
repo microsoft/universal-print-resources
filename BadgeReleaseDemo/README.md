@@ -163,8 +163,10 @@ When zero or multiple collections exist, the command reports the available next 
 instead of selecting a collection implicitly. Collection deletion prompts for
 confirmation unless `--force` is specified.
 
-The service may return `501 Not Implemented` when listing mappings. The CLI reports
-that limitation without treating it as an authentication or connectivity failure.
+Badge collections fit in one service response, so collection listing does not paginate.
+Badge mapping listing is not implemented by the service yet. The CLI reports the
+resulting `501 Not Implemented` response without treating it as an authentication or
+connectivity failure.
 
 Updating a mapping replaces its identity fields rather than merging omitted values.
 `--upn` is therefore required when changing `--user-id`; provide the mapping's current
@@ -234,16 +236,15 @@ Authorization: Bearer {printer-device-token}
 **Request body:**
 ```json
 {
-  "badgeId": "123",
-  "bypassCache": false
+  "badgeId": "123"
 }
 ```
 
-Run the demo with `--use-v1-badge-api` to use the legacy
+Run the demo with `demo --use-v1-badge-api` to use the legacy
 `GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}` endpoint instead:
 
 ```powershell
-dotnet run -- --use-v1-badge-api
+dotnet run -- demo --use-v1-badge-api
 ```
 
 **Success response (200 OK):**

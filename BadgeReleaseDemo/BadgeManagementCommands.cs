@@ -34,6 +34,7 @@ public static class BadgeManagementCommands
             {
                 ConsoleHelper.WriteKeyValue("Collection ID", collection.Id);
             }
+            ConsoleHelper.WriteInfo("Badge collection listing fits in a single service response; pagination is not required.");
 
             return 0;
         }));
@@ -42,8 +43,9 @@ public static class BadgeManagementCommands
         createCommand.SetAction(_ => RunAuthenticatedAsync(async (client, token) =>
         {
             var collectionId = await client.CreateBadgeCollectionAsync(token);
-            ConsoleHelper.WriteSuccess("Badge collection is ready.");
+            ConsoleHelper.WriteSuccess("Badge collection provisioning completed.");
             ConsoleHelper.WriteKeyValue("Collection ID", collectionId);
+            ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
             return 0;
         }));
 
@@ -110,7 +112,7 @@ public static class BadgeManagementCommands
             var result = await client.ListBadgesAsync(token, collectionId);
             if (!result.IsSupported)
             {
-                ConsoleHelper.WriteWarning("Listing badge mappings is not supported by the service.");
+                ConsoleHelper.WriteWarning("The service does not implement badge mapping listing yet.");
                 return 0;
             }
 

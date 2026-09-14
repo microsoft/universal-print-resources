@@ -142,7 +142,8 @@ public class Program
             ConsoleHelper.WriteStep("🏷️", "Creating badge collection...");
             token = await auth.GetUserTokenAsync();
             badgeCollectionId = await badgeMgmt.CreateBadgeCollectionAsync(token);
-            ConsoleHelper.WriteSuccess($"Badge collection ready (ID: {badgeCollectionId}).");
+            ConsoleHelper.WriteSuccess($"Badge collection provisioning completed (ID: {badgeCollectionId}).");
+            ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
 
             // ═══════════════════════════════════════════════════════════
             // Step 5: Prompt for badge ID and create badge

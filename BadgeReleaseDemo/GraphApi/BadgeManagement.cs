@@ -15,6 +15,10 @@ namespace BadgeReleaseDemo.GraphApi;
 /// </summary>
 public class BadgeManagement : IDisposable
 {
+    public const string CollectionSettlingNote =
+        "NOTE: Badge writes may need additional time to settle after collection provisioning succeeds. " +
+        "If adding a badge returns 'Badge collection not found', wait a few minutes and retry.";
+
     private readonly string graphBaseUrl;
     private readonly HttpClient httpClient;
 
