@@ -204,9 +204,9 @@ public static class BadgeManagementCommands
         {
             var upn = parseResult.GetValue(upnOption);
             var userId = parseResult.GetValue(userIdOption);
-            if (string.IsNullOrWhiteSpace(upn) && string.IsNullOrWhiteSpace(userId))
+            if (string.IsNullOrWhiteSpace(upn))
             {
-                ConsoleHelper.WriteError("At least one of --upn or --user-id must be provided.");
+                ConsoleHelper.WriteError("--upn is required when updating a badge mapping.");
                 return 1;
             }
 

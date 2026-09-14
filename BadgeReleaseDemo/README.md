@@ -154,7 +154,7 @@ dotnet run -- badges mappings get --collection-id <collection-id> --badge-id <ba
 dotnet run -- badges mappings create --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn>
 dotnet run -- badges mappings create --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn> --user-id <user-id>
 dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --upn <new-upn>
-dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --user-id <new-user-id>
+dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn> --user-id <new-user-id>
 dotnet run -- badges mappings delete --collection-id <collection-id> --badge-id <badge-id>
 ```
 
@@ -165,6 +165,10 @@ confirmation unless `--force` is specified.
 
 The service may return `501 Not Implemented` when listing mappings. The CLI reports
 that limitation without treating it as an authentication or connectivity failure.
+
+Updating a mapping replaces its identity fields rather than merging omitted values.
+`--upn` is therefore required when changing `--user-id`; provide the mapping's current
+UPN when it is not changing.
 
 CSV import is not currently included.
 

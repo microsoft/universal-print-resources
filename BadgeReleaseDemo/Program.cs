@@ -33,17 +33,13 @@ public class Program
         rootCommand.Options.Add(rootUseV1Option);
         rootCommand.SetAction(async parseResult =>
         {
-            await RunDemoAsync(parseResult.GetValue(rootUseV1Option));
-            return 0;
+            return await RunDemoAsync(parseResult.GetValue(rootUseV1Option));
         });
 
-        var demoUseV1Option = CreateUseV1BadgeApiOption();
         var demoCommand = new Command("demo", "Run the full interactive badge release workflow");
-        demoCommand.Options.Add(demoUseV1Option);
         demoCommand.SetAction(async parseResult =>
         {
-            await RunDemoAsync(parseResult.GetValue(demoUseV1Option));
-            return 0;
+            return await RunDemoAsync(parseResult.GetValue(rootUseV1Option));
         });
 
         rootCommand.Subcommands.Add(demoCommand);
@@ -55,10 +51,11 @@ public class Program
     private static Option<bool> CreateUseV1BadgeApiOption() =>
         new("--use-v1-badge-api")
         {
-            Description = "Use the legacy V1 badge lookup API during the demo"
+            Description = "Use the legacy V1 badge lookup API during the demo",
+            Recursive = true
         };
 
-    private static async Task RunDemoAsync(bool useV1BadgeApi)
+    private static async Task<int> RunDemoAsync(bool useV1BadgeApi)
     {
         ConsoleHelper.WriteHeader("🏷️  Universal Print — Badge Release Demo");
 
@@ -77,7 +74,7 @@ public class Program
         if (appId == "YOUR_APP_ID_HERE" || tenantId == "YOUR_TENANT_HERE")
         {
             ConsoleHelper.WriteError("Please set your App ID and Tenant in appsettings.json before running this demo.");
-            return;
+            return 1;
         }
 
         // Initialize services
@@ -157,7 +154,7 @@ public class Program
             if (string.IsNullOrWhiteSpace(badgeId))
             {
                 ConsoleHelper.WriteError("Badge ID cannot be empty.");
-                return;
+                return 1;
             }
 
             // ═══════════════════════════════════════════════════════════
@@ -185,7 +182,7 @@ public class Program
                 if (!File.Exists(bundledPdfPath))
                 {
                     ConsoleHelper.WriteError("PDF path cannot be empty.");
-                    return;
+                    return 1;
                 }
 
                 pdfPath = bundledPdfPath;
@@ -196,7 +193,7 @@ public class Program
             if (!File.Exists(pdfPath))
             {
                 ConsoleHelper.WriteError($"File not found: {pdfPath}");
-                return;
+                return 1;
             }
 
             graphToken = await auth.GetGraphTokenAsync();
@@ -278,7 +275,7 @@ public class Program
             {
                 ConsoleHelper.WriteWarning("No fetchable jobs found for this user.");
                 ConsoleHelper.WriteInfo("The job may not be ready yet. In production, the printer would poll.");
-                return;
+                return 1;
             }
 
             var selectedJob = jobs[0];
@@ -307,7 +304,7 @@ public class Program
                     if (attemptsRemaining <= 0)
                     {
                         ConsoleHelper.WriteError($"Submitted job {submittedJobId} was not found in fetchable jobs.");
-                        return;
+                        return 1;
                     }
 
                     ConsoleHelper.WriteInfo($"Submitted job {submittedJobId} not fetchable yet. Polling again in 5 seconds...");
@@ -339,7 +336,7 @@ public class Program
             if (fetchJobStatusCode != 0x0000) // 0x0000 = successful-ok
             {
                 ConsoleHelper.WriteError($"Fetch-Job failed: {fetchJobStatusCode:X4}");
-                return;
+                return 1;
             }
 
             ConsoleHelper.WriteSuccess("Job metadata received.");
@@ -354,7 +351,7 @@ public class Program
             if (ackStatus != 0x0000) // 0x0000 = successful-ok
             {
                 ConsoleHelper.WriteError($"Acknowledge-Job failed: {ackStatus:X4}");
-                return;
+                return 1;
             }
 
             ConsoleHelper.WriteSuccess("Job acknowledged.");
@@ -369,7 +366,7 @@ public class Program
             if (documentData == null || documentData.Length == 0)
             {
                 ConsoleHelper.WriteError("Failed to download document.");
-                return;
+                return 1;
             }
 
             ConsoleHelper.WriteSuccess($"Document downloaded ({documentData.Length} bytes).");
@@ -387,7 +384,7 @@ public class Program
             if (completeStatus != 0x0000) // 0x0000 = successful-ok
             {
                 ConsoleHelper.WriteError($"Update-Job-Status failed: {completeStatus:X4}");
-                return;
+                return 1;
             }
 
             ConsoleHelper.WriteSuccess("Job marked as completed! 🎉");
@@ -396,11 +393,13 @@ public class Program
             ConsoleHelper.WriteInfo("The Badge Release flow completed successfully.");
             ConsoleHelper.WriteInfo("Press any key to exit.");
             Console.ReadKey();
+            return 0;
         }
         catch (Exception ex)
         {
             ConsoleHelper.WriteError($"Demo failed: {ex.Message}");
             ConsoleHelper.WriteInfo(ex.StackTrace ?? string.Empty);
+            return 1;
         }
         finally
         {
