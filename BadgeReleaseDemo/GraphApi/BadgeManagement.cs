@@ -53,7 +53,7 @@ public class BadgeManagement : IDisposable
     /// GET /print/operations/{operationId} until the operation state is 'succeeded' before the
     /// collection can accept badges — otherwise adding a badge fails with 404.
     /// </remarks>
-    public async Task<string> CreateBadgeCollectionAsync(string accessToken)
+    public async Task<BadgeCollectionCreationResult> CreateBadgeCollectionAsync(string accessToken)
     {
         using var request = CreateRequest(HttpMethod.Post, $"{graphBaseUrl}/print/badgeCollections", accessToken);
         request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
@@ -63,7 +63,9 @@ public class BadgeManagement : IDisposable
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
             ConsoleHelper.WriteInfo("Badge collection already exists (this is OK).");
-            return await GetBadgeCollectionIdAsync(accessToken);
+            return new BadgeCollectionCreationResult(
+                await GetBadgeCollectionIdAsync(accessToken),
+                Created: false);
         }
 
         if (!response.IsSuccessStatusCode)
@@ -88,12 +90,16 @@ public class BadgeManagement : IDisposable
             await WaitForBadgeCollectionOperationAsync(accessToken, operationId);
 
             // The collection ID is returned with the operation; fall back to a list lookup if absent.
-            return !string.IsNullOrEmpty(collectionId)
-                ? collectionId
-                : await GetBadgeCollectionIdAsync(accessToken);
+            return new BadgeCollectionCreationResult(
+                !string.IsNullOrEmpty(collectionId)
+                    ? collectionId
+                    : await GetBadgeCollectionIdAsync(accessToken),
+                Created: true);
         }
 
-        return await GetBadgeCollectionIdAsync(accessToken);
+        return new BadgeCollectionCreationResult(
+            await GetBadgeCollectionIdAsync(accessToken),
+            Created: true);
     }
 
     /// <summary>
@@ -421,6 +427,8 @@ public class BadgeManagement : IDisposable
 }
 
 public sealed record BadgeCollection(string Id);
+
+public sealed record BadgeCollectionCreationResult(string Id, bool Created);
 
 public sealed record BadgeMapping(string Id, string Upn, string? UserId);
 

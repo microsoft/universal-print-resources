@@ -21,13 +21,33 @@ public class BadgeManagementTests
         });
         using var client = new BadgeManagement("https://graph.example/v1.0", handler);
 
-        var collectionId = await client.CreateBadgeCollectionAsync("access-token");
+        var result = await client.CreateBadgeCollectionAsync("access-token");
 
-        Assert.Equal("collection-1", collectionId);
+        Assert.Equal("collection-1", result.Id);
+        Assert.True(result.Created);
         Assert.Equal(2, handler.Requests.Count);
         Assert.Equal(
             "https://graph.example/v1.0/print/operations/operation-1",
             handler.Requests[1].Uri);
+    }
+
+    [Fact]
+    public async Task CreateBadgeCollectionAsync_ReportsExistingCollection()
+    {
+        var handler = new RecordingHttpMessageHandler((_, call) => call switch
+        {
+            0 => new HttpResponseMessage(HttpStatusCode.Conflict),
+            1 => RecordingHttpMessageHandler.JsonResponse(
+                HttpStatusCode.OK,
+                """{"value":[{"id":"existing-collection"}]}"""),
+            _ => throw new InvalidOperationException("Unexpected request.")
+        });
+        using var client = new BadgeManagement("https://graph.example/v1.0", handler);
+
+        var result = await client.CreateBadgeCollectionAsync("access-token");
+
+        Assert.Equal("existing-collection", result.Id);
+        Assert.False(result.Created);
     }
 
     [Fact]

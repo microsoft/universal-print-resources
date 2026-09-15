@@ -42,10 +42,17 @@ public static class BadgeManagementCommands
         var createCommand = new Command("create", "Create a badge collection if one does not exist");
         createCommand.SetAction(_ => RunAuthenticatedAsync(async (client, token) =>
         {
-            var collectionId = await client.CreateBadgeCollectionAsync(token);
-            ConsoleHelper.WriteSuccess("Badge collection provisioning completed.");
-            ConsoleHelper.WriteKeyValue("Collection ID", collectionId);
-            ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
+            var result = await client.CreateBadgeCollectionAsync(token);
+            ConsoleHelper.WriteSuccess(
+                result.Created
+                    ? "Badge collection provisioning completed."
+                    : "Using existing badge collection.");
+            ConsoleHelper.WriteKeyValue("Collection ID", result.Id);
+            if (result.Created)
+            {
+                ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
+            }
+
             return 0;
         }));
 

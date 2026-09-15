@@ -148,9 +148,17 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", "Creating badge collection...");
             token = await auth.GetUserTokenAsync();
-            badgeCollectionId = await badgeMgmt.CreateBadgeCollectionAsync(token);
-            ConsoleHelper.WriteSuccess($"Badge collection provisioning completed (ID: {badgeCollectionId}).");
-            ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
+            var collectionResult = await badgeMgmt.CreateBadgeCollectionAsync(token);
+            badgeCollectionId = collectionResult.Id;
+            if (collectionResult.Created)
+            {
+                ConsoleHelper.WriteSuccess($"Badge collection provisioning completed (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
+            }
+            else
+            {
+                ConsoleHelper.WriteSuccess($"Using existing badge collection (ID: {badgeCollectionId}).");
+            }
 
             // ═══════════════════════════════════════════════════════════
             // Step 5: Prompt for badge ID and create badge
