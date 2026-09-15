@@ -52,6 +52,24 @@ public class PrinterIppClient : IDisposable
     public void Dispose() => httpClient.Dispose();
 
     /// <summary>
+    /// Advertises that this printer supports badge-authorized secure release.
+    /// </summary>
+    public async Task<ushort> AdvertiseBadgeReleaseCapabilityAsync(
+        string printerToken,
+        string printerId)
+    {
+        var ippHost = new Uri(ippServiceBaseUrl).Host;
+        var printerUri = $"ipps://{ippHost}/printers/{printerId}";
+        var ippRequest = MinimalIpp.BuildBadgeReleaseCapabilitiesRequest(
+            requestId: NextRequestId(),
+            printerUri: printerUri,
+            outputDeviceUuid: printerId);
+
+        var responseData = await SendIppRequestAsync(printerToken, ippRequest);
+        return MinimalIpp.ParseStatusCodeResponse(responseData);
+    }
+
+    /// <summary>
     /// Returns the next IPP request-id. IPP request-ids must be non-zero and are expected to
     /// increment across operations on a connection.
     /// </summary>

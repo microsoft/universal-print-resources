@@ -20,7 +20,8 @@ namespace BadgeReleaseDemo;
 ///   3. Share the printer (with jobs held for secure release)
 ///   4. Create a badge collection and add a badge
 ///   5. Submit a PDF print job
-///   6. Simulate badge scan → resolve badge → IPP fetch → open document → complete job
+///   6. Advertise badge release support and verify the job remains held
+///   7. Resolve the badge, verify the job becomes fetchable, fetch it, and complete it
 /// </summary>
 public class Program
 {
@@ -238,10 +239,24 @@ public class Program
                 return 1;
             }
 
-            ConsoleHelper.WriteStep("🔒", "Verifying the job is held before badge release...");
+            ConsoleHelper.WriteStep("🔒", "Verifying the job is held before badge authentication...");
             ConsoleHelper.WriteProgress("Acquiring printer device token...");
             var printerToken = await auth.GetPrinterTokenAsync();
             ConsoleHelper.WriteSuccess("Printer authenticated.");
+
+            ConsoleHelper.WriteProgress("Advertising badge release capability...");
+            var capabilityStatus = await ippClient.AdvertiseBadgeReleaseCapabilityAsync(
+                printerToken,
+                printerId);
+            if (capabilityStatus != 0x0000)
+            {
+                ConsoleHelper.WriteError(
+                    $"Update-Output-Device-Attributes failed: {capabilityStatus:X4}");
+                return 1;
+            }
+
+            ConsoleHelper.WriteSuccess(
+                "Printer advertised job-release-action-supported=owner-authorized-badge.");
 
             var preReleaseJobs = await ippClient.GetJobsAsync(
                 printerToken,
@@ -250,13 +265,13 @@ public class Program
             if (FindJobById(preReleaseJobs, submittedJobId) != null)
             {
                 ConsoleHelper.WriteError(
-                    $"Submitted job {submittedJobId} was fetchable before badge release. " +
+                    $"Submitted job {submittedJobId} was fetchable before badge authentication. " +
                     "Secure-release holding is not working.");
                 return 1;
             }
 
             ConsoleHelper.WriteSuccess(
-                $"Confirmed submitted job {submittedJobId} is not fetchable before badge release.");
+                $"Confirmed submitted job {submittedJobId} is not fetchable before badge authentication.");
 
             // ═══════════════════════════════════════════════════════════
             // Step 9: Simulate badge scan
@@ -309,15 +324,25 @@ public class Program
             }
 
             // ═══════════════════════════════════════════════════════════
-            // Step 11: Verify the job is fetchable after badge release
+            // Step 11: Verify the job is fetchable after badge authentication
             // ═══════════════════════════════════════════════════════════
-            ConsoleHelper.WriteStep("🖨️", "Verifying the released job is fetchable...");
-            var attemptsRemaining = 6;
+            ConsoleHelper.WriteStep("🖨️", "Verifying the badge-authenticated job is fetchable...");
+            var attemptsRemaining = 18;
             (int JobId, string JobUri)? selectedJob = null;
             List<(int JobId, string JobUri)> jobs = [];
             while (selectedJob == null)
             {
                 jobs = await ippClient.GetJobsAsync(printerToken, printerId, resolvedUserUri!);
+                if (jobs.Count == 0)
+                {
+                    ConsoleHelper.WriteInfo("Get-Jobs returned no fetchable jobs.");
+                }
+                else
+                {
+                    ConsoleHelper.WriteInfo(
+                        $"Get-Jobs returned IPP job ID(s): {string.Join(", ", jobs.Select(job => job.JobId))}");
+                }
+
                 selectedJob = FindJobById(jobs, submittedJobId);
                 if (selectedJob != null)
                 {
@@ -328,7 +353,7 @@ public class Program
                 if (attemptsRemaining <= 0)
                 {
                     ConsoleHelper.WriteError(
-                        $"Submitted job {submittedJobId} was not fetchable after badge release.");
+                        $"Submitted job {submittedJobId} was not fetchable after badge authentication.");
                     return 1;
                 }
 
@@ -340,7 +365,7 @@ public class Program
             resolvedJobId = selectedJob.Value.JobId;
             resolvedJobUri = selectedJob.Value.JobUri;
             ConsoleHelper.WriteSuccess(
-                $"Confirmed submitted job {resolvedJobId} is fetchable after badge release.");
+                $"Confirmed submitted job {resolvedJobId} is fetchable after badge authentication.");
             ConsoleHelper.WriteInfo($"Found {jobs.Count} fetchable job(s) for the user.");
             ConsoleHelper.WriteKeyValue("Fetching Job ID", resolvedJobId.ToString());
             if (!string.IsNullOrEmpty(resolvedJobUri))
