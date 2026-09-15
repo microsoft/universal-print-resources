@@ -30,7 +30,29 @@
     </Content>
   </ItemGroup>
 
-  <Target Name="SetSettingsFilePermissions" AfterTargets="CopyFilesToOutputDirectory">
+  <Target
+    Name="PreserveExistingUserSettings"
+    BeforeTargets="_CopyOutOfDateSourceItemsToOutputDirectory">
+    <ItemGroup>
+      <_SourceItemsToCopyToOutputDirectory
+        Remove="@(_SourceItemsToCopyToOutputDirectory)"
+        Condition="'%(TargetPath)' == 'appsettings.json'" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="EnsureUserSettingsFile" AfterTargets="Build">
+    <Copy
+      SourceFiles="$(ProjectDir)appsettings.json"
+      DestinationFiles="$(TargetDir)appsettings.json"
+      Condition="!Exists('$(TargetDir)appsettings.json')">
+      <Output TaskParameter="CopiedFiles" ItemName="FileWrites" />
+    </Copy>
+  </Target>
+
+  <Target
+    Name="SetSettingsFilePermissions"
+    AfterTargets="Build"
+    DependsOnTargets="EnsureUserSettingsFile">
     <Exec
       Condition="'$(OS)' == 'Windows_NT'"
       Command="attrib -R &quot;$(TargetDir)appsettings.json&quot; &amp;&amp; attrib +R &quot;$(TargetDir)badgeapisettings.json&quot;" />

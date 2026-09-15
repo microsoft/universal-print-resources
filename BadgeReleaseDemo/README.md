@@ -100,9 +100,10 @@ Build the app, then edit the generated `appsettings.json` beside the executable
 | `Tenant` | Your tenant domain or GUID | `contoso.onmicrosoft.com` or a tenant GUID |
 
 Keep the checked-in `appsettings.json` placeholders unchanged so personal tenant
-values are not accidentally committed to this public repository. The generated
-configuration is normally preserved across subsequent builds. If the output
-directory is deleted or cleaned, configure the newly generated file again.
+values are not accidentally committed to this public repository. Builds create the
+generated configuration only when it is missing and never overwrite an existing
+output copy. If the output directory is deleted or cleaned, configure the newly
+generated file again.
 
 The remaining settings point to commercial production Universal Print endpoints.
 Badge API route versions are maintained by the demo in `badgeapisettings.json`; this
