@@ -31,6 +31,7 @@ public static class MinimalIpp
     private const ushort OP_ACKNOWLEDGE_JOB = 0x0041;
     private const ushort OP_FETCH_DOCUMENT = 0x0042;
     private const ushort OP_UPDATE_JOB_STATUS = 0x0048;
+    private const ushort OP_UPDATE_OUTPUT_DEVICE_ATTRIBUTES = 0x0049;
 
     // Attribute group tags
     private const byte TAG_OPERATION_ATTRIBUTES = 0x01;
@@ -105,6 +106,39 @@ public static class MinimalIpp
         // End of attributes
         stream.WriteByte(TAG_END_OF_ATTRIBUTES);
         
+        return stream.ToArray();
+    }
+
+    /// <summary>
+    /// Builds an Update-Output-Device-Attributes request advertising badge release.
+    /// </summary>
+    public static byte[] BuildBadgeReleaseCapabilitiesRequest(
+        ushort requestId,
+        string printerUri,
+        string outputDeviceUuid)
+    {
+        using var stream = new MemoryStream();
+
+        WriteIppHeader(stream, requestId, OP_UPDATE_OUTPUT_DEVICE_ATTRIBUTES);
+
+        stream.WriteByte(TAG_OPERATION_ATTRIBUTES);
+        WriteAttributeWithTag(stream, TAG_CHARSET, "attributes-charset", "utf-8");
+        WriteAttributeWithTag(stream, TAG_NATURAL_LANGUAGE, "attributes-natural-language", "en-us");
+        WriteAttributeWithTag(stream, TAG_URI, "printer-uri", printerUri);
+        WriteAttributeWithTag(
+            stream,
+            TAG_CHARSET,
+            "output-device-uuid",
+            $"urn:uuid:{outputDeviceUuid}");
+
+        stream.WriteByte(TAG_PRINTER_ATTRIBUTES);
+        WriteAttributeWithTag(
+            stream,
+            TAG_KEYWORD,
+            "job-release-action-supported",
+            "owner-authorized-badge");
+
+        stream.WriteByte(TAG_END_OF_ATTRIBUTES);
         return stream.ToArray();
     }
     

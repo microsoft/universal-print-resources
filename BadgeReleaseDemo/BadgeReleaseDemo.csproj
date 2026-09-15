@@ -7,10 +7,12 @@
     <AssemblyName>BadgeReleaseDemo</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <OverwriteReadOnlyFiles>true</OverwriteReadOnlyFiles>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Identity.Client" Version="4.74.1" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0" />
     <PackageReference Include="System.Text.Json" Version="9.0.3" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.7.0" />
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.5.1" />
@@ -20,9 +22,43 @@
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="badgeapisettings.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <Content Include="Resources\SampleDocument.pdf">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
   </ItemGroup>
+
+  <Target
+    Name="PreserveExistingUserSettings"
+    BeforeTargets="_CopyOutOfDateSourceItemsToOutputDirectory">
+    <ItemGroup>
+      <_SourceItemsToCopyToOutputDirectory
+        Remove="@(_SourceItemsToCopyToOutputDirectory)"
+        Condition="'%(TargetPath)' == 'appsettings.json'" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="EnsureUserSettingsFile" AfterTargets="Build">
+    <Copy
+      SourceFiles="$(ProjectDir)appsettings.json"
+      DestinationFiles="$(TargetDir)appsettings.json"
+      Condition="!Exists('$(TargetDir)appsettings.json')">
+      <Output TaskParameter="CopiedFiles" ItemName="FileWrites" />
+    </Copy>
+  </Target>
+
+  <Target
+    Name="SetSettingsFilePermissions"
+    AfterTargets="Build"
+    DependsOnTargets="EnsureUserSettingsFile">
+    <Exec
+      Condition="'$(OS)' == 'Windows_NT'"
+      Command="attrib -R &quot;$(TargetDir)appsettings.json&quot; &amp;&amp; attrib +R &quot;$(TargetDir)badgeapisettings.json&quot;" />
+    <Exec
+      Condition="'$(OS)' != 'Windows_NT'"
+      Command="chmod u+w &quot;$(TargetDir)appsettings.json&quot; &amp;&amp; chmod a-w &quot;$(TargetDir)badgeapisettings.json&quot;" />
+  </Target>
 
 </Project>
