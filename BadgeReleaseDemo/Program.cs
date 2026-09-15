@@ -19,8 +19,8 @@ namespace BadgeReleaseDemo;
 ///   2. Register a virtual printer
 ///   3. Share the printer (with jobs held for secure release)
 ///   4. Create a badge collection and add a badge
-///   5. Submit a PDF print job
-///   6. Advertise badge release support and verify the job remains held
+///   5. Advertise badge release support
+///   6. Submit a PDF print job and verify it remains held
 ///   7. Resolve the badge, verify the job becomes fetchable, fetch it, and complete it
 /// </summary>
 public class Program
@@ -184,7 +184,29 @@ public class Program
             ConsoleHelper.WriteSuccess($"Badge '{badgeId}' mapped to {auth.UserUpn}.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 7: Submit a PDF print job
+            // Step 7: Advertise badge release support
+            // ═══════════════════════════════════════════════════════════
+            ConsoleHelper.WriteStep("🔐", "Configuring printer badge release capability...");
+            ConsoleHelper.WriteProgress("Acquiring printer device token...");
+            var printerToken = await auth.GetPrinterTokenAsync();
+            ConsoleHelper.WriteSuccess("Printer authenticated.");
+
+            ConsoleHelper.WriteProgress("Advertising badge release capability...");
+            var capabilityStatus = await ippClient.AdvertiseBadgeReleaseCapabilityAsync(
+                printerToken,
+                printerId);
+            if (capabilityStatus != 0x0000)
+            {
+                ConsoleHelper.WriteError(
+                    $"Update-Output-Device-Attributes failed: {capabilityStatus:X4}");
+                return 1;
+            }
+
+            ConsoleHelper.WriteSuccess(
+                "Printer advertised job-release-action-supported=owner-authorized-badge.");
+
+            // ═══════════════════════════════════════════════════════════
+            // Step 8: Submit a PDF print job
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("📄", "Submitting print job...");
 
@@ -230,7 +252,7 @@ public class Program
             ConsoleHelper.WriteSuccess("Print job submitted and started.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 8: Verify secure-release holding before badge scan
+            // Step 9: Verify secure-release holding before badge scan
             // ═══════════════════════════════════════════════════════════
             if (!int.TryParse(jobId, out var submittedJobId))
             {
@@ -240,24 +262,6 @@ public class Program
             }
 
             ConsoleHelper.WriteStep("🔒", "Verifying the job is held before badge authentication...");
-            ConsoleHelper.WriteProgress("Acquiring printer device token...");
-            var printerToken = await auth.GetPrinterTokenAsync();
-            ConsoleHelper.WriteSuccess("Printer authenticated.");
-
-            ConsoleHelper.WriteProgress("Advertising badge release capability...");
-            var capabilityStatus = await ippClient.AdvertiseBadgeReleaseCapabilityAsync(
-                printerToken,
-                printerId);
-            if (capabilityStatus != 0x0000)
-            {
-                ConsoleHelper.WriteError(
-                    $"Update-Output-Device-Attributes failed: {capabilityStatus:X4}");
-                return 1;
-            }
-
-            ConsoleHelper.WriteSuccess(
-                "Printer advertised job-release-action-supported=owner-authorized-badge.");
-
             var preReleaseJobs = await ippClient.GetJobsAsync(
                 printerToken,
                 printerId,
@@ -274,7 +278,7 @@ public class Program
                 $"Confirmed submitted job {submittedJobId} is not fetchable before badge authentication.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 9: Simulate badge scan
+            // Step 10: Simulate badge scan
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", "Simulating badge scan at the printer...");
             ConsoleHelper.WriteInfo("Imagine you are walking up to the printer and scanning your badge.");
@@ -294,7 +298,7 @@ public class Program
                 }
 
                 // ═══════════════════════════════════════════════════════
-                // Step 10: Resolve badge via IPPService BadgesController
+                // Step 11: Resolve badge via IPPService BadgesController
                 // ═══════════════════════════════════════════════════════
                 ConsoleHelper.WriteStep("🔍", $"Resolving badge '{scannedBadgeId}'...");
                 try
@@ -324,7 +328,7 @@ public class Program
             }
 
             // ═══════════════════════════════════════════════════════════
-            // Step 11: Verify the job is fetchable after badge authentication
+            // Step 12: Verify the job is fetchable after badge authentication
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Verifying the badge-authenticated job is fetchable...");
             var attemptsRemaining = 18;
@@ -374,7 +378,7 @@ public class Program
             }
 
             // ═══════════════════════════════════════════════════════════
-            // Step 12: Fetch-Job (get job metadata)
+            // Step 13: Fetch-Job (get job metadata)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Printer: Fetching job metadata...");
             var (fetchJobStatusCode, _, _) = await ippClient.FetchJobAsync(
@@ -389,7 +393,7 @@ public class Program
             ConsoleHelper.WriteSuccess("Job metadata received.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 13: Acknowledge-Job
+            // Step 14: Acknowledge-Job
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Printer: Acknowledging job...");
             var ackStatus = await ippClient.AcknowledgeJobAsync(
@@ -404,7 +408,7 @@ public class Program
             ConsoleHelper.WriteSuccess("Job acknowledged.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 14: Fetch-Document (download PDF)
+            // Step 15: Fetch-Document (download PDF)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("📄", "Printer: Downloading document...");
             var documentData = await ippClient.FetchDocumentAsync(
@@ -422,7 +426,7 @@ public class Program
             savedDocumentPath = PrinterIppClient.SaveAndOpenDocument(documentData);
 
             // ═══════════════════════════════════════════════════════════
-            // Step 15: Update-Job-Status → Completed
+            // Step 16: Update-Job-Status → Completed
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("✅", "Printer: Marking job as completed...");
             var completeStatus = await ippClient.UpdateJobStatusAsync(

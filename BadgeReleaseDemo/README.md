@@ -23,15 +23,16 @@ The app walks through the complete lifecycle interactively:
 | 3. **Share printer** | Create the share, enable secure-release holding, and validate that it is enabled | `POST graph.microsoft.com/v1.0/print/shares`, `PATCH` and `GET graph.microsoft.com/beta/print/shares/{id}` |
 | 4. **Create badge collection** | Provision a badge collection for the tenant (idempotent) | `POST graph.print.microsoft.com/v1.0/print/badgeCollections` |
 | 5. **Add badge** | Map a user-provided badge ID to the signed-in user | `POST graph.print.microsoft.com/v1.0/print/badgeCollections/{id}/badges` |
-| 6. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
-| 7. **Advertise badge release and verify job is held** | Acquire a printer token, advertise `job-release-action-supported=owner-authorized-badge`, and prove that the submitted job is not fetchable before badge authentication | `POST {deviceTokenUrl}`, IPP Update-Output-Device-Attributes, IPP Get-Jobs |
-| 8. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `POST print.print.microsoft.com/api/v2.0/badges/lookup` |
-| 9. **Verify job is eligible** | Poll until that exact submitted job is fetchable for the resolved user | IPP Get-Jobs |
-| 10. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
-| 11. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
-| 12. **Fetch-Document** | Download the print document (IPP) | IPP Fetch-Document |
-| 13. **Complete job** | Mark the job as completed (IPP) | IPP Update-Job-Status |
-| 14. **Clean up** | Delete badge, share, printer, and local files | Graph + Badge APIs |
+| 6. **Advertise badge release** | Acquire a printer token and advertise `job-release-action-supported=owner-authorized-badge` before any job is submitted | `POST {deviceTokenUrl}`, IPP Update-Output-Device-Attributes |
+| 7. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
+| 8. **Verify job is held** | Prove that the submitted job is not fetchable before badge authentication | IPP Get-Jobs |
+| 9. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `POST print.print.microsoft.com/api/v2.0/badges/lookup` |
+| 10. **Verify job is eligible** | Poll until that exact submitted job is fetchable for the resolved user | IPP Get-Jobs |
+| 11. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
+| 12. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
+| 13. **Fetch-Document** | Download the print document (IPP) | IPP Fetch-Document |
+| 14. **Complete job** | Mark the job as completed (IPP) | IPP Update-Job-Status |
+| 15. **Clean up** | Delete badge, share, printer, and local files | Graph + Badge APIs |
 
 ## Prerequisites
 
