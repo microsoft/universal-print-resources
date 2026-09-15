@@ -221,13 +221,40 @@ public class Program
             ConsoleHelper.WriteSuccess("Print job submitted and started.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 8: Acquire printer device token + simulate badge scan
+            // Step 8: Verify secure-release holding before badge scan
             // ═══════════════════════════════════════════════════════════
-            ConsoleHelper.WriteStep("🏷️", "Simulating badge scan at the printer...");
-            ConsoleHelper.WriteInfo("Imagine you are walking up to the printer and scanning your badge.");
+            if (!int.TryParse(jobId, out var submittedJobId))
+            {
+                ConsoleHelper.WriteError(
+                    $"Graph job ID '{jobId}' cannot be validated as an IPP job ID.");
+                return 1;
+            }
+
+            ConsoleHelper.WriteStep("🔒", "Verifying the job is held before badge release...");
             ConsoleHelper.WriteProgress("Acquiring printer device token...");
             var printerToken = await auth.GetPrinterTokenAsync();
             ConsoleHelper.WriteSuccess("Printer authenticated.");
+
+            var preReleaseJobs = await ippClient.GetJobsAsync(
+                printerToken,
+                printerId,
+                string.Empty);
+            if (FindJobById(preReleaseJobs, submittedJobId) != null)
+            {
+                ConsoleHelper.WriteError(
+                    $"Submitted job {submittedJobId} was fetchable before badge release. " +
+                    "Secure-release holding is not working.");
+                return 1;
+            }
+
+            ConsoleHelper.WriteSuccess(
+                $"Confirmed submitted job {submittedJobId} is not fetchable before badge release.");
+
+            // ═══════════════════════════════════════════════════════════
+            // Step 9: Simulate badge scan
+            // ═══════════════════════════════════════════════════════════
+            ConsoleHelper.WriteStep("🏷️", "Simulating badge scan at the printer...");
+            ConsoleHelper.WriteInfo("Imagine you are walking up to the printer and scanning your badge.");
 
             // Badge scan retry loop
             string? resolvedUserUri = null;
@@ -244,7 +271,7 @@ public class Program
                 }
 
                 // ═══════════════════════════════════════════════════════
-                // Step 9: Resolve badge via IPPService BadgesController
+                // Step 10: Resolve badge via IPPService BadgesController
                 // ═══════════════════════════════════════════════════════
                 ConsoleHelper.WriteStep("🔍", $"Resolving badge '{scannedBadgeId}'...");
                 try
@@ -274,60 +301,39 @@ public class Program
             }
 
             // ═══════════════════════════════════════════════════════════
-            // Step 10: Get-Jobs as printer with requesting-user-uri
+            // Step 11: Verify the job is fetchable after badge release
             // ═══════════════════════════════════════════════════════════
-            ConsoleHelper.WriteStep("🖨️", "Printer: Getting fetchable jobs...");
-            var jobs = await ippClient.GetJobsAsync(printerToken, printerId, resolvedUserUri!);
-
-            if (jobs.Count == 0)
+            ConsoleHelper.WriteStep("🖨️", "Verifying the released job is fetchable...");
+            var attemptsRemaining = 6;
+            (int JobId, string JobUri)? selectedJob = null;
+            List<(int JobId, string JobUri)> jobs = [];
+            while (selectedJob == null)
             {
-                ConsoleHelper.WriteWarning("No fetchable jobs found for this user.");
-                ConsoleHelper.WriteInfo("The job may not be ready yet. In production, the printer would poll.");
-                return 1;
-            }
-
-            var selectedJob = jobs[0];
-            if (int.TryParse(jobId, out var submittedJobId))
-            {
-                var attemptsRemaining = 6;
-                while (true)
+                jobs = await ippClient.GetJobsAsync(printerToken, printerId, resolvedUserUri!);
+                selectedJob = FindJobById(jobs, submittedJobId);
+                if (selectedJob != null)
                 {
-                    bool found = false;
-                    foreach (var candidate in jobs)
-                    {
-                        if (candidate.JobId == submittedJobId)
-                        {
-                            selectedJob = candidate;
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if (found)
-                    {
-                        break;
-                    }
-
-                    attemptsRemaining--;
-                    if (attemptsRemaining <= 0)
-                    {
-                        ConsoleHelper.WriteError($"Submitted job {submittedJobId} was not found in fetchable jobs.");
-                        return 1;
-                    }
-
-                    ConsoleHelper.WriteInfo($"Submitted job {submittedJobId} not fetchable yet. Polling again in 5 seconds...");
-                    await Task.Delay(TimeSpan.FromSeconds(5));
-                    jobs = await ippClient.GetJobsAsync(printerToken, printerId, resolvedUserUri!);
+                    break;
                 }
-            }
-            else
-            {
-                ConsoleHelper.WriteWarning($"Could not parse Graph job ID '{jobId}' as IPP integer. Using the first fetchable job.");
+
+                attemptsRemaining--;
+                if (attemptsRemaining <= 0)
+                {
+                    ConsoleHelper.WriteError(
+                        $"Submitted job {submittedJobId} was not fetchable after badge release.");
+                    return 1;
+                }
+
+                ConsoleHelper.WriteInfo(
+                    $"Submitted job {submittedJobId} not fetchable yet. Polling again in 5 seconds...");
+                await Task.Delay(TimeSpan.FromSeconds(5));
             }
 
-            resolvedJobId = selectedJob.JobId;
-            resolvedJobUri = selectedJob.JobUri;
-            ConsoleHelper.WriteSuccess($"Found {jobs.Count} fetchable job(s).");
+            resolvedJobId = selectedJob.Value.JobId;
+            resolvedJobUri = selectedJob.Value.JobUri;
+            ConsoleHelper.WriteSuccess(
+                $"Confirmed submitted job {resolvedJobId} is fetchable after badge release.");
+            ConsoleHelper.WriteInfo($"Found {jobs.Count} fetchable job(s) for the user.");
             ConsoleHelper.WriteKeyValue("Fetching Job ID", resolvedJobId.ToString());
             if (!string.IsNullOrEmpty(resolvedJobUri))
             {
@@ -335,7 +341,7 @@ public class Program
             }
 
             // ═══════════════════════════════════════════════════════════
-            // Step 11: Fetch-Job (get job metadata)
+            // Step 12: Fetch-Job (get job metadata)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Printer: Fetching job metadata...");
             var (fetchJobStatusCode, _, _) = await ippClient.FetchJobAsync(
@@ -350,7 +356,7 @@ public class Program
             ConsoleHelper.WriteSuccess("Job metadata received.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 12: Acknowledge-Job
+            // Step 13: Acknowledge-Job
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Printer: Acknowledging job...");
             var ackStatus = await ippClient.AcknowledgeJobAsync(
@@ -365,7 +371,7 @@ public class Program
             ConsoleHelper.WriteSuccess("Job acknowledged.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 13: Fetch-Document (download PDF)
+            // Step 14: Fetch-Document (download PDF)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("📄", "Printer: Downloading document...");
             var documentData = await ippClient.FetchDocumentAsync(
@@ -383,7 +389,7 @@ public class Program
             savedDocumentPath = PrinterIppClient.SaveAndOpenDocument(documentData);
 
             // ═══════════════════════════════════════════════════════════
-            // Step 14: Update-Job-Status → Completed
+            // Step 15: Update-Job-Status → Completed
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("✅", "Printer: Marking job as completed...");
             var completeStatus = await ippClient.UpdateJobStatusAsync(
@@ -478,6 +484,21 @@ public class Program
                 }
             }
         }
+    }
+
+    internal static (int JobId, string JobUri)? FindJobById(
+        IEnumerable<(int JobId, string JobUri)> jobs,
+        int jobId)
+    {
+        foreach (var job in jobs)
+        {
+            if (job.JobId == jobId)
+            {
+                return job;
+            }
+        }
+
+        return null;
     }
 
     private static JsonElement LoadConfiguration(string fileName)

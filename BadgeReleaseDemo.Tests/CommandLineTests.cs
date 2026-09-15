@@ -39,4 +39,17 @@ public class CommandLineTests
             parseResult.Errors,
             error => error.Message.Contains("--upn", StringComparison.Ordinal));
     }
+
+    [Fact]
+    public void FindJobById_ReturnsOnlyTheRequestedJob()
+    {
+        var jobs = new[]
+        {
+            (JobId: 10, JobUri: "ipps://print.example/jobs/10"),
+            (JobId: 20, JobUri: "ipps://print.example/jobs/20")
+        };
+
+        Assert.Null(Program.FindJobById(jobs, 30));
+        Assert.Equal(jobs[1], Program.FindJobById(jobs, 20));
+    }
 }

@@ -20,13 +20,13 @@ The app walks through the complete lifecycle interactively:
 |------|-------------|-----------|
 | 1. **Sign in** | Authenticate as a Printer Administrator | MSAL interactive auth |
 | 2. **Register printer** | Create a virtual printer with an in-memory certificate | `POST register.print.microsoft.com/api/v1.0/register` |
-| 3. **Share printer** | Make the printer available to all users, holding jobs for secure release (`holdJobsForSecureRelease = true`) | `POST graph.microsoft.com/v1.0/print/shares` |
+| 3. **Share printer** | Create the share, enable secure-release holding, and validate that it is enabled | `POST graph.microsoft.com/v1.0/print/shares`, `PATCH` and `GET graph.microsoft.com/beta/print/shares/{id}` |
 | 4. **Create badge collection** | Provision a badge collection for the tenant (idempotent) | `POST graph.print.microsoft.com/v1.0/print/badgeCollections` |
 | 5. **Add badge** | Map a user-provided badge ID to the signed-in user | `POST graph.print.microsoft.com/v1.0/print/badgeCollections/{id}/badges` |
 | 6. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
-| 7. **Acquire printer token** | Obtain a device token for the printer via JWT-bearer flow | `POST {deviceTokenUrl}` |
+| 7. **Verify job is held** | Acquire a printer token and prove that the submitted job is not fetchable before badge release | `POST {deviceTokenUrl}`, IPP Get-Jobs |
 | 8. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `POST print.print.microsoft.com/api/v2.0/badges/lookup` |
-| 9. **Get-Jobs** | Find fetchable jobs for the resolved user (IPP) | IPP Get-Jobs |
+| 9. **Verify job is released** | Poll until that exact submitted job is fetchable for the resolved user | IPP Get-Jobs |
 | 10. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
 | 11. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
 | 12. **Fetch-Document** | Download the print document (IPP) | IPP Fetch-Document |
@@ -181,7 +181,7 @@ CSV import is not currently included.
 
 ```
 BadgeReleaseDemo/
-├── Program.cs                          # CLI root and full 14-step demo orchestration
+├── Program.cs                          # CLI root and full demo orchestration
 ├── BadgeManagementCommands.cs         # Badge collection and mapping commands
 ├── appsettings.json                    # App ID, tenant, and service endpoints
 ├── badgeapisettings.json               # App-owned V1 and V2 badge API routes
