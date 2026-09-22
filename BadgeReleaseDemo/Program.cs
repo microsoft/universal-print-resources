@@ -84,6 +84,14 @@ public class Program
 
         // Initialize services
         var auth = new AuthHelper(appId, tenantId);
+        string printerToken = string.Empty;
+
+        async Task<string> RefreshAndStorePrinterTokenAsync()
+        {
+            printerToken = await auth.RefreshPrinterTokenAsync();
+            return printerToken;
+        }
+
         using var printerReg = new PrinterRegistration(registrationBaseUrl);
         using var printerShare = new PrinterSharing(graphBaseUrl);
         using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl);
@@ -94,7 +102,7 @@ public class Program
             badgesV1ApiPath,
             badgesV2ApiPath,
             useV1BadgeApi,
-            auth.RefreshPrinterTokenAsync);
+            RefreshAndStorePrinterTokenAsync);
 
 
         string printerId = string.Empty;
@@ -185,7 +193,7 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🔐", "Configuring printer badge release capability...");
             ConsoleHelper.WriteProgress("Acquiring printer device token...");
-            var printerToken = await auth.GetPrinterTokenAsync();
+            printerToken = await auth.GetPrinterTokenAsync();
             ConsoleHelper.WriteSuccess("Printer authenticated.");
 
             ConsoleHelper.WriteProgress("Advertising badge release capability...");
