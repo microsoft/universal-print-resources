@@ -47,6 +47,37 @@ public class PrinterIppClientTests
     }
 
     [Fact]
+    public async Task ResolveBadgeAsync_RefreshesExpiredPrinterTokenOnce()
+    {
+        var handler = new RecordingHttpMessageHandler((_, requestIndex) =>
+            requestIndex == 0
+                ? RecordingHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.Unauthorized,
+                    """{"error":"expired token"}""")
+                : RecordingHttpMessageHandler.JsonResponse(
+                    HttpStatusCode.OK,
+                    """{"badgeId":"badge-1","userURI":"mailto:user@contoso.com"}"""));
+        var refreshCount = 0;
+        using var client = CreateClient(
+            useV1BadgeApi: false,
+            handler,
+            () =>
+            {
+                refreshCount++;
+                return Task.FromResult("refreshed-token");
+            });
+
+        var result = await client.ResolveBadgeAsync("expired-token", "badge-1");
+
+        Assert.NotNull(result);
+        Assert.Equal(1, refreshCount);
+        Assert.Collection(
+            handler.Requests,
+            request => Assert.Equal("expired-token", request.BearerToken),
+            request => Assert.Equal("refreshed-token", request.BearerToken));
+    }
+
+    [Fact]
     public async Task GetJobsAsync_PreservesUnsuccessfulIppStatus()
     {
         var handler = new RecordingHttpMessageHandler((_, _) =>
@@ -73,12 +104,14 @@ public class PrinterIppClientTests
 
     private static PrinterIppClient CreateClient(
         bool useV1BadgeApi,
-        HttpMessageHandler handler) =>
+        HttpMessageHandler handler,
+        Func<Task<string>>? refreshPrinterToken = null) =>
         new(
             "https://print.example",
             "/printers",
             "/api/v1.0/badges",
             "/api/v2.0/badges/lookup",
             useV1BadgeApi,
+            refreshPrinterToken,
             httpMessageHandler: handler);
 }

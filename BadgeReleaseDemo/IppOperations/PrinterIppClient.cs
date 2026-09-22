@@ -83,32 +83,50 @@ public class PrinterIppClient : IDisposable
     public async Task<(string BadgeId, string UserUri, string? UserId, bool UserIdPresent)?> ResolveBadgeAsync(
         string printerToken, string badgeId)
     {
-        using var request = CreateBadgeLookupRequest(badgeId);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", printerToken);
-        await WriteBadgeLookupRequestAsync(request);
+        var token = printerToken;
+        var refreshed = false;
 
-        var response = await httpClient.SendAsync(request);
-        var body = await response.Content.ReadAsStringAsync();
-
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        while (true)
         {
-            return null;
+            using var request = CreateBadgeLookupRequest(badgeId);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            await WriteBadgeLookupRequestAsync(request);
+
+            using var response = await httpClient.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
+                !refreshed &&
+                refreshPrinterToken != null)
+            {
+                ConsoleHelper.WriteWarning(
+                    "Printer token expired during badge lookup — refreshing and retrying...");
+                token = await refreshPrinterToken();
+                refreshed = true;
+                continue;
+            }
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return null;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"Badge resolution failed: {response.StatusCode} - {body}");
+            }
+
+            var doc = JsonSerializer.Deserialize<JsonElement>(body);
+            var resolvedBadgeId = doc.GetProperty("badgeId").GetString()!;
+            var userUri = doc.GetProperty("userURI").GetString()!;
+            var userIdPresent = doc.TryGetProperty("userId", out var uidProp);
+            string? userId = userIdPresent && uidProp.ValueKind != JsonValueKind.Null
+                ? uidProp.GetString()
+                : null;
+
+            return (resolvedBadgeId, userUri, userId, userIdPresent);
         }
-
-        if (!response.IsSuccessStatusCode)
-        {
-            throw new HttpRequestException($"Badge resolution failed: {response.StatusCode} - {body}");
-        }
-
-        var doc = JsonSerializer.Deserialize<JsonElement>(body);
-        var resolvedBadgeId = doc.GetProperty("badgeId").GetString()!;
-        var userUri = doc.GetProperty("userURI").GetString()!;
-        var userIdPresent = doc.TryGetProperty("userId", out var uidProp);
-        string? userId = userIdPresent && uidProp.ValueKind != JsonValueKind.Null
-            ? uidProp.GetString()
-            : null;
-
-        return (resolvedBadgeId, userUri, userId, userIdPresent);
     }
 
     private static async Task WriteBadgeLookupRequestAsync(HttpRequestMessage request)

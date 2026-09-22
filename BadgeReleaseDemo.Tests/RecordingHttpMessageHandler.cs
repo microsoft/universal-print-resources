@@ -17,7 +17,8 @@ internal sealed class RecordingHttpMessageHandler(
             request.Content == null
                 ? null
                 : await request.Content.ReadAsStringAsync(cancellationToken),
-            request.Content?.Headers.ContentType?.MediaType);
+            request.Content?.Headers.ContentType?.MediaType,
+            request.Headers.Authorization?.Parameter);
         Requests.Add(snapshot);
         return responseFactory(snapshot, Requests.Count - 1);
     }
@@ -35,4 +36,5 @@ internal sealed record RequestSnapshot(
     HttpMethod Method,
     string Uri,
     string? Body,
-    string? ContentType);
+    string? ContentType,
+    string? BearerToken);
