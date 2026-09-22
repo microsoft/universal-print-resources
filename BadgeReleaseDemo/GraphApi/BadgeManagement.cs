@@ -4,6 +4,7 @@
 
 using System.Net;
 using System.Net.Http.Headers;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using BadgeReleaseDemo.Helpers;
@@ -110,10 +111,10 @@ public class BadgeManagement : IDisposable
     {
         var maxWait = TimeSpan.FromMinutes(10);
         var defaultDelay = TimeSpan.FromSeconds(5);
-        var startTime = DateTime.UtcNow;
+        var stopwatch = Stopwatch.StartNew();
         ConsoleHelper.WriteInfo($"Badge collection operation ID: {operationId}");
 
-        while (DateTime.UtcNow - startTime < maxWait)
+        while (stopwatch.Elapsed < maxWait)
         {
             using var request = CreateRequest(
                 HttpMethod.Get,
@@ -142,13 +143,35 @@ public class BadgeManagement : IDisposable
                         $"Badge collection provisioning failed: {responseBody}");
             }
 
-            var delay = response.Headers.RetryAfter?.Delta ?? defaultDelay;
+            var remainingWait = maxWait - stopwatch.Elapsed;
+            if (remainingWait <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            var delay = GetRetryDelay(
+                response.Headers.RetryAfter,
+                defaultDelay,
+                remainingWait,
+                DateTimeOffset.UtcNow);
             ConsoleHelper.WriteProgress(
                 $"Badge collection provisioning is still in progress; retrying in {delay.TotalSeconds:0.#}s...");
             await Task.Delay(delay);
         }
 
         throw new TimeoutException("Timed out waiting for badge collection provisioning to complete.");
+    }
+
+    internal static TimeSpan GetRetryDelay(
+        RetryConditionHeaderValue? retryAfter,
+        TimeSpan defaultDelay,
+        TimeSpan remainingWait,
+        DateTimeOffset now)
+    {
+        var requestedDelay = retryAfter?.Delta
+            ?? (retryAfter?.Date is { } retryDate ? retryDate - now : defaultDelay);
+        requestedDelay = requestedDelay < TimeSpan.Zero ? TimeSpan.Zero : requestedDelay;
+        return requestedDelay < remainingWait ? requestedDelay : remainingWait;
     }
 
     private static (string OperationId, string CollectionId) ParseBadgePrintOperation(string responseBody)

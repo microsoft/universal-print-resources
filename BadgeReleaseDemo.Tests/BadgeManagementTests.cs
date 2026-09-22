@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using BadgeReleaseDemo.GraphApi;
 
@@ -90,5 +91,31 @@ public class BadgeManagementTests
         using var body = JsonDocument.Parse(request.Body!);
         Assert.Equal("user@contoso.com", body.RootElement.GetProperty("upn").GetString());
         Assert.Equal("user-1", body.RootElement.GetProperty("userId").GetString());
+    }
+
+    [Fact]
+    public void GetRetryDelay_ClampsDeltaToRemainingTimeout()
+    {
+        var delay = BadgeManagement.GetRetryDelay(
+            new RetryConditionHeaderValue(TimeSpan.FromMinutes(20)),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromSeconds(2),
+            DateTimeOffset.UtcNow);
+
+        Assert.Equal(TimeSpan.FromSeconds(2), delay);
+    }
+
+    [Fact]
+    public void GetRetryDelay_HandlesHttpDate()
+    {
+        var now = new DateTimeOffset(2026, 9, 22, 22, 0, 0, TimeSpan.Zero);
+
+        var delay = BadgeManagement.GetRetryDelay(
+            new RetryConditionHeaderValue(now.AddSeconds(30)),
+            TimeSpan.FromSeconds(5),
+            TimeSpan.FromMinutes(1),
+            now);
+
+        Assert.Equal(TimeSpan.FromSeconds(30), delay);
     }
 }
