@@ -259,20 +259,50 @@ public class Program
             }
 
             ConsoleHelper.WriteStep("🔒", "Verifying the job is held before badge authentication...");
-            var preReleaseJobs = await ippClient.GetJobsAsync(
-                printerToken,
-                printerId,
-                string.Empty);
-            if (FindJobById(preReleaseJobs, submittedJobId) != null)
+            var preReleaseObservationDuration = TimeSpan.FromSeconds(15);
+            var preReleaseObservationEndsAt = DateTime.UtcNow.Add(preReleaseObservationDuration);
+            ConsoleHelper.WriteProgress(
+                $"Observing job visibility for {preReleaseObservationDuration.TotalSeconds:0} seconds...");
+            while (true)
             {
-                ConsoleHelper.WriteError(
-                    $"Submitted job {submittedJobId} was fetchable before badge authentication. " +
-                    "Secure-release holding is not working.");
-                return 1;
+                var preReleaseResult = await ippClient.GetJobsAsync(
+                    printerToken,
+                    printerId,
+                    string.Empty);
+                if (preReleaseResult.StatusCode != 0x0000)
+                {
+                    ConsoleHelper.WriteError(
+                        $"Could not verify secure-release holding because Get-Jobs failed: " +
+                        $"{preReleaseResult.StatusCode:X4}.");
+                    return 1;
+                }
+
+                if (FindJobById(preReleaseResult.Jobs, submittedJobId) != null)
+                {
+                    ConsoleHelper.WriteError(
+                        $"Submitted job {submittedJobId} was fetchable before badge authentication. " +
+                        "Secure-release holding is not working.");
+                    return 1;
+                }
+
+                var remainingObservationTime = preReleaseObservationEndsAt - DateTime.UtcNow;
+                if (remainingObservationTime <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                var delay = TimeSpan.FromSeconds(
+                    Math.Min(5, remainingObservationTime.TotalSeconds));
+                ConsoleHelper.WriteInfo(
+                    $"Submitted job {submittedJobId} remains unavailable before badge authentication. " +
+                    $"Checking again in {delay.TotalSeconds:0.#} seconds...");
+                await Task.Delay(delay);
             }
 
             ConsoleHelper.WriteSuccess(
-                $"Confirmed submitted job {submittedJobId} is not fetchable before badge authentication.");
+                $"Confirmed submitted job {submittedJobId} remained unavailable for " +
+                $"{preReleaseObservationDuration.TotalSeconds:0} seconds " +
+                "before badge authentication.");
 
             // ═══════════════════════════════════════════════════════════
             // Step 10: Simulate badge scan
@@ -333,7 +363,19 @@ public class Program
             List<(int JobId, string JobUri)> jobs = [];
             while (selectedJob == null)
             {
-                jobs = await ippClient.GetJobsAsync(printerToken, printerId, resolvedUserUri!);
+                var getJobsResult = await ippClient.GetJobsAsync(
+                    printerToken,
+                    printerId,
+                    resolvedUserUri!);
+                if (getJobsResult.StatusCode != 0x0000)
+                {
+                    ConsoleHelper.WriteError(
+                        $"Could not verify badge-authenticated job visibility because Get-Jobs failed: " +
+                        $"{getJobsResult.StatusCode:X4}.");
+                    return 1;
+                }
+
+                jobs = getJobsResult.Jobs;
                 if (jobs.Count == 0)
                 {
                     ConsoleHelper.WriteInfo("Get-Jobs returned no fetchable jobs.");

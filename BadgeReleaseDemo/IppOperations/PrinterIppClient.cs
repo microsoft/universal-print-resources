@@ -142,9 +142,9 @@ public class PrinterIppClient : IDisposable
 
     /// <summary>
     /// Sends Get-Jobs IPP request as the printer to find fetchable jobs for a user.
-    /// Returns list of (jobId, jobUri) tuples.
+    /// Returns the IPP status and list of (jobId, jobUri) tuples.
     /// </summary>
-    public async Task<List<(int JobId, string JobUri)>> GetJobsAsync(
+    public async Task<IppGetJobsResult> GetJobsAsync(
         string printerToken, string printerId, string requestingUserUri)
     {
         var ippHost = new Uri(ippServiceBaseUrl).Host;
@@ -164,7 +164,7 @@ public class PrinterIppClient : IDisposable
         if (statusCode != 0x0000) // 0x0000 = successful-ok
         {
             ConsoleHelper.WriteWarning($"Get-Jobs returned status: {statusCode:X4}");
-            return new List<(int, string)>();
+            return new IppGetJobsResult(statusCode, []);
         }
 
         var jobs = new List<(int JobId, string JobUri)>();
@@ -190,7 +190,7 @@ public class PrinterIppClient : IDisposable
             }
         }
 
-        return jobs;
+        return new IppGetJobsResult(statusCode, jobs);
     }
 
     /// <summary>
@@ -373,4 +373,8 @@ public class PrinterIppClient : IDisposable
                 $"IPP request failed: {(int)response.StatusCode} {response.StatusCode} - {errorBody}");
         }
     }
+
+    public sealed record IppGetJobsResult(
+        ushort StatusCode,
+        List<(int JobId, string JobUri)> Jobs);
 }

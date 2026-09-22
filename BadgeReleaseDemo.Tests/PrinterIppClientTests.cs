@@ -46,6 +46,31 @@ public class PrinterIppClientTests
         Assert.Null(request.Body);
     }
 
+    [Fact]
+    public async Task GetJobsAsync_PreservesUnsuccessfulIppStatus()
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent(
+                [
+                    0x02, 0x00,             // IPP 2.0
+                    0x05, 0x00,             // server-error-internal-error
+                    0x00, 0x00, 0x00, 0x01, // request-id
+                    0x03                    // end-of-attributes
+                ])
+            });
+        using var client = CreateClient(useV1BadgeApi: false, handler);
+
+        var result = await client.GetJobsAsync(
+            "printer-token",
+            "printer-1",
+            string.Empty);
+
+        Assert.Equal(0x0500, result.StatusCode);
+        Assert.Empty(result.Jobs);
+    }
+
     private static PrinterIppClient CreateClient(
         bool useV1BadgeApi,
         HttpMessageHandler handler) =>
