@@ -131,14 +131,26 @@ dotnet test BadgeReleaseDemo.sln
 3. Run the full interactive demo without rebuilding:
 
 ```powershell
+dotnet run --no-build -- demo
+```
+
+The `demo` command walks through each step interactively, prompting for a badge ID
+and PDF file path. At the end, all created cloud resources (printer, share, badge)
+are automatically cleaned up.
+
+Running with no command prints the root usage instructions instead of performing live
+tenant operations:
+
+```powershell
 dotnet run --no-build
 ```
 
-Running with no command is equivalent to `dotnet run -- demo`. The app walks through
-each step interactively, prompting for a badge ID and PDF file path. At the end, all
-created cloud resources (printer, share, badge) are automatically cleaned up.
+Use `dotnet run --no-build -- --help` to display the same usage explicitly. To run
+the demo with the legacy badge lookup API, use:
 
-Use `dotnet run -- --help` to display all available commands.
+```powershell
+dotnet run --no-build -- demo --use-v1-badge-api
+```
 
 ## Badge Management Commands
 

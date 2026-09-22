@@ -36,7 +36,7 @@ public class Program
     internal static RootCommand CreateRootCommand()
     {
         var rootCommand = new RootCommand(
-            "Universal Print Badge Release demo and badge management utility. Runs the full demo when no command is specified.");
+            "Universal Print Badge Release demo and badge management utility.");
 
         var demoUseV1Option = CreateUseV1BadgeApiOption();
         var demoCommand = new Command("demo", "Run the full interactive badge release workflow");
@@ -52,10 +52,7 @@ public class Program
     }
 
     internal static string[] NormalizeArguments(string[] args) =>
-        args.Length == 0 ||
-            args.All(argument => argument == "--use-v1-badge-api")
-            ? new[] { "demo" }.Concat(args).ToArray()
-            : args;
+        args.Length == 0 ? ["--help"] : args;
 
     private static Option<bool> CreateUseV1BadgeApiOption() =>
         new("--use-v1-badge-api")

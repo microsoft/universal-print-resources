@@ -3,12 +3,10 @@ namespace BadgeReleaseDemo.Tests;
 public class CommandLineTests
 {
     [Fact]
-    public void NormalizeArguments_DefaultsToDemo()
+    public void NoArguments_ShowRootHelp()
     {
-        Assert.Equal(["demo"], Program.NormalizeArguments([]));
-        Assert.Equal(
-            ["demo", "--use-v1-badge-api"],
-            Program.NormalizeArguments(["--use-v1-badge-api"]));
+        Assert.Equal(["--help"], Program.NormalizeArguments([]));
+        Assert.Equal(["demo"], Program.NormalizeArguments(["demo"]));
     }
 
     [Fact]
