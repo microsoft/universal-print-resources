@@ -267,7 +267,7 @@ public class Program
             }
 
             ConsoleHelper.WriteStep("🔒", "Verifying the job is held before badge authentication...");
-            var preReleaseObservationDuration = TimeSpan.FromSeconds(15);
+            var preReleaseObservationDuration = TimeSpan.FromSeconds(90);
             var preReleaseObservationEndsAt = DateTime.UtcNow.Add(preReleaseObservationDuration);
             ConsoleHelper.WriteProgress(
                 $"Observing job visibility for {preReleaseObservationDuration.TotalSeconds:0} seconds...");

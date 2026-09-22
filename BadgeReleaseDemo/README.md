@@ -25,7 +25,7 @@ The app walks through the complete lifecycle interactively:
 | 5. **Add badge** | Map a user-provided badge ID to the signed-in user | `POST graph.print.microsoft.com/v1.0/print/badgeCollections/{id}/badges` |
 | 6. **Advertise badge release** | Acquire a printer token and advertise `job-release-action-supported=owner-authorized-badge` before any job is submitted | `POST {deviceTokenUrl}`, IPP Update-Output-Device-Attributes |
 | 7. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
-| 8. **Verify job is held** | Observe for 15 seconds that the submitted job never becomes fetchable before badge authentication | IPP Get-Jobs |
+| 8. **Verify job is held** | Observe for 90 seconds that the submitted job never becomes fetchable before badge authentication, matching the post-authentication propagation budget | IPP Get-Jobs |
 | 9. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `POST print.print.microsoft.com/api/v2.0/badges/lookup` |
 | 10. **Verify job is eligible** | Poll until that exact submitted job is fetchable for the resolved user | IPP Get-Jobs |
 | 11. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
