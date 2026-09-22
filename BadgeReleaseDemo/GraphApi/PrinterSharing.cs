@@ -122,7 +122,7 @@ public class PrinterSharing : IDisposable
     public async Task DeleteShareAsync(string accessToken, string shareId)
     {
         using var request = new HttpRequestMessage(HttpMethod.Delete,
-            $"{graphBaseUrl}/print/shares/{shareId}");
+            $"{graphBaseUrl}/print/shares/{Uri.EscapeDataString(shareId)}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
         using var response = await httpClient.SendAsync(request);

@@ -61,14 +61,14 @@ public class PrinterSharingTests
         {
             0 => RecordingHttpMessageHandler.JsonResponse(
                 HttpStatusCode.Created,
-                """{"id":"share-1"}"""),
+                """{"id":"share/1"}"""),
             1 => new HttpResponseMessage(patchStatus)
             {
                 Content = new StringContent(patchFails ? "invalid patch" : string.Empty)
             },
             2 when !patchFails => RecordingHttpMessageHandler.JsonResponse(
                 HttpStatusCode.OK,
-                """{"id":"share-1","holdJobsForSecureRelease":false}"""),
+                """{"id":"share/1","holdJobsForSecureRelease":false}"""),
             2 when patchFails => new HttpResponseMessage(HttpStatusCode.NoContent),
             3 => new HttpResponseMessage(HttpStatusCode.NoContent),
             _ => throw new InvalidOperationException("Unexpected request.")
@@ -80,6 +80,6 @@ public class PrinterSharingTests
 
         var delete = handler.Requests[^1];
         Assert.Equal(HttpMethod.Delete, delete.Method);
-        Assert.Equal("https://graph.example/v1.0/print/shares/share-1", delete.Uri);
+        Assert.Equal("https://graph.example/v1.0/print/shares/share%2F1", delete.Uri);
     }
 }
