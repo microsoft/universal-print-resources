@@ -3,6 +3,7 @@
 // </copyright>
 
 using System.CommandLine;
+using System.Diagnostics;
 using System.Text.Json;
 using BadgeReleaseDemo.Auth;
 using BadgeReleaseDemo.GraphApi;
@@ -366,7 +367,9 @@ public class Program
             // Step 12: Verify the job is fetchable after badge authentication
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Verifying the badge-authenticated job is fetchable...");
-            var attemptsRemaining = 18;
+            var postAuthenticationPollingDuration = TimeSpan.FromSeconds(90);
+            var pollingInterval = TimeSpan.FromSeconds(5);
+            var postAuthenticationStopwatch = Stopwatch.StartNew();
             (int JobId, string JobUri)? selectedJob = null;
             List<(int JobId, string JobUri)> jobs = [];
             while (selectedJob == null)
@@ -400,8 +403,11 @@ public class Program
                     break;
                 }
 
-                attemptsRemaining--;
-                if (attemptsRemaining <= 0)
+                var delay = GetNextPollingDelay(
+                    postAuthenticationStopwatch.Elapsed,
+                    postAuthenticationPollingDuration,
+                    pollingInterval);
+                if (delay == null)
                 {
                     ConsoleHelper.WriteError(
                         $"Submitted job {submittedJobId} was not fetchable after badge authentication.");
@@ -409,8 +415,9 @@ public class Program
                 }
 
                 ConsoleHelper.WriteInfo(
-                    $"Submitted job {submittedJobId} not fetchable yet. Polling again in 5 seconds...");
-                await Task.Delay(TimeSpan.FromSeconds(5));
+                    $"Submitted job {submittedJobId} not fetchable yet. " +
+                    $"Polling again in {delay.Value.TotalSeconds:0.#} seconds...");
+                await Task.Delay(delay.Value);
             }
 
             resolvedJobId = selectedJob.Value.JobId;
@@ -583,6 +590,20 @@ public class Program
         }
 
         return null;
+    }
+
+    internal static TimeSpan? GetNextPollingDelay(
+        TimeSpan elapsed,
+        TimeSpan pollingDuration,
+        TimeSpan pollingInterval)
+    {
+        var remaining = pollingDuration - elapsed;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return null;
+        }
+
+        return remaining < pollingInterval ? remaining : pollingInterval;
     }
 
     private static JsonElement LoadConfiguration(string fileName)

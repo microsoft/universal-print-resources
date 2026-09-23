@@ -50,4 +50,30 @@ public class CommandLineTests
         Assert.Null(Program.FindJobById(jobs, 30));
         Assert.Equal(jobs[1], Program.FindJobById(jobs, 20));
     }
+
+    [Theory]
+    [InlineData(85, 5)]
+    [InlineData(88, 2)]
+    public void GetNextPollingDelay_ReachesPollingBoundary(
+        int elapsedSeconds,
+        int expectedDelaySeconds)
+    {
+        var delay = Program.GetNextPollingDelay(
+            TimeSpan.FromSeconds(elapsedSeconds),
+            TimeSpan.FromSeconds(90),
+            TimeSpan.FromSeconds(5));
+
+        Assert.Equal(TimeSpan.FromSeconds(expectedDelaySeconds), delay);
+    }
+
+    [Fact]
+    public void GetNextPollingDelay_StopsAfterBoundaryRequest()
+    {
+        var delay = Program.GetNextPollingDelay(
+            TimeSpan.FromSeconds(90),
+            TimeSpan.FromSeconds(90),
+            TimeSpan.FromSeconds(5));
+
+        Assert.Null(delay);
+    }
 }
