@@ -15,21 +15,23 @@ namespace BadgeReleaseDemo.GraphApi;
 public class PrinterSharing : IDisposable
 {
     private readonly string graphBaseUrl;
+    private readonly string graphBetaBaseUrl;
     private readonly HttpClient httpClient;
 
-    public PrinterSharing(string graphBaseUrl)
+    public PrinterSharing(string graphBaseUrl, HttpMessageHandler? httpMessageHandler = null)
     {
-        this.graphBaseUrl = graphBaseUrl;
-        httpClient = new HttpClient();
+        this.graphBaseUrl = graphBaseUrl.TrimEnd('/');
+        graphBetaBaseUrl = ReplaceApiVersion(this.graphBaseUrl, "beta");
+        httpClient = httpMessageHandler == null
+            ? new HttpClient()
+            : new HttpClient(httpMessageHandler);
     }
 
     public void Dispose() => httpClient.Dispose();
 
     /// <summary>
-    /// Creates a printer share with allowAllUsers=true and secure release enabled.
-    /// Setting holdJobsForSecureRelease=true holds jobs in the cloud until the user
-    /// authenticates at the printer (e.g. via a badge tap), which is what enables the
-    /// badge release flow. Returns the share ID.
+    /// Creates a printer share, enables secure-release holding through the beta share
+    /// endpoint, and validates that the setting was applied. Returns the share ID.
     /// </summary>
     public async Task<string> CreateShareAsync(string accessToken, string printerId, string displayName)
     {
@@ -37,7 +39,6 @@ public class PrinterSharing : IDisposable
         {
             ["displayName"] = displayName,
             ["allowAllUsers"] = true,
-            ["holdJobsForSecureRelease"] = true,
             ["printer@odata.bind"] = $"{graphBaseUrl}/print/printers/{printerId}",
         };
 
@@ -46,7 +47,7 @@ public class PrinterSharing : IDisposable
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
 
-        var response = await httpClient.SendAsync(request);
+        using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (!response.IsSuccessStatusCode)
@@ -55,41 +56,139 @@ public class PrinterSharing : IDisposable
         }
 
         var shareDoc = JsonSerializer.Deserialize<JsonElement>(responseBody);
-        return shareDoc.GetProperty("id").GetString()
+        var shareId = shareDoc.GetProperty("id").GetString()
             ?? throw new InvalidOperationException("No share ID in response.");
+
+        try
+        {
+            await EnableSecureReleaseAsync(accessToken, shareId);
+            await ValidateSecureReleaseAsync(accessToken, shareId);
+            return shareId;
+        }
+        catch
+        {
+            try
+            {
+                await DeleteShareAsync(accessToken, shareId);
+            }
+            catch (Exception cleanupException)
+            {
+                ConsoleHelper.WriteWarning(
+                    $"Failed to delete share during rollback: {cleanupException.Message}");
+            }
+
+            throw;
+        }
     }
 
-    /// <summary>
-    /// Deletes a printer share.
-    /// </summary>
-    public async Task DeleteShareAsync(string accessToken, string shareId)
+    private async Task EnableSecureReleaseAsync(string accessToken, string shareId)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Delete,
-            $"{graphBaseUrl}/print/shares/{shareId}");
+        using var request = new HttpRequestMessage(
+            HttpMethod.Patch,
+            $"{graphBetaBaseUrl}/print/shares/{Uri.EscapeDataString(shareId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Content = new StringContent(
+            """{"holdJobsForSecureRelease":true}""",
+            Encoding.UTF8,
+            "application/json");
+
+        using var response = await httpClient.SendAsync(request);
+        if (!response.IsSuccessStatusCode)
+        {
+            var responseBody = await response.Content.ReadAsStringAsync();
+            throw new HttpRequestException(
+                $"Failed to enable secure release on printer share: {response.StatusCode} - {responseBody}");
+        }
+    }
+
+    private async Task ValidateSecureReleaseAsync(string accessToken, string shareId)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{graphBetaBaseUrl}/print/shares/{Uri.EscapeDataString(shareId)}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        var response = await httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+        using var response = await httpClient.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
         {
-            var body = await response.Content.ReadAsStringAsync();
-            ConsoleHelper.WriteWarning($"Failed to delete share: {response.StatusCode} - {body}");
+            throw new HttpRequestException(
+                $"Failed to validate printer share secure release: {response.StatusCode} - {responseBody}");
+        }
+
+        var share = JsonSerializer.Deserialize<JsonElement>(responseBody);
+        if (!share.TryGetProperty("holdJobsForSecureRelease", out var holdJobs) ||
+            holdJobs.ValueKind != JsonValueKind.True)
+        {
+            throw new InvalidOperationException(
+                "Printer share validation did not confirm holdJobsForSecureRelease=true.");
         }
     }
 
     /// <summary>
-    /// Deletes a printer.
+    /// Deletes a printer share. Returns false when the share is already absent.
     /// </summary>
-    public async Task DeletePrinterAsync(string accessToken, string printerId)
+    public async Task<bool> DeleteShareAsync(string accessToken, string shareId)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Delete,
+            $"{graphBaseUrl}/print/shares/{Uri.EscapeDataString(shareId)}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        using var response = await httpClient.SendAsync(request);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Failed to delete share: {response.StatusCode} - {body}");
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Deletes a printer. Returns false when the printer is already absent.
+    /// </summary>
+    public async Task<bool> DeletePrinterAsync(string accessToken, string printerId)
     {
         using var request = new HttpRequestMessage(HttpMethod.Delete,
             $"{graphBaseUrl}/print/printers/{printerId}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
-        var response = await httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+        using var response = await httpClient.SendAsync(request);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
-            var body = await response.Content.ReadAsStringAsync();
-            ConsoleHelper.WriteWarning($"Failed to delete printer: {response.StatusCode} - {body}");
+            return false;
         }
+
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Failed to delete printer: {response.StatusCode} - {body}");
+        }
+
+        return true;
+    }
+
+    private static string ReplaceApiVersion(string baseUrl, string apiVersion)
+    {
+        var uri = new Uri(baseUrl);
+        var pathSegments = uri.AbsolutePath.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (pathSegments.Length == 0)
+        {
+            throw new ArgumentException("Graph base URL must include an API version.", nameof(baseUrl));
+        }
+
+        pathSegments[^1] = apiVersion;
+        var builder = new UriBuilder(uri)
+        {
+            Path = string.Join('/', pathSegments)
+        };
+        return builder.Uri.ToString().TrimEnd('/');
     }
 }

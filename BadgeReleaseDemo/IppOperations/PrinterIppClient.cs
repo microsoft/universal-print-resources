@@ -4,6 +4,8 @@
 
 using System.Diagnostics;
 using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using BadgeReleaseDemo.Helpers;
 
 namespace BadgeReleaseDemo.IppOperations;
@@ -19,7 +21,9 @@ public class PrinterIppClient : IDisposable
 
     private readonly string ippServiceBaseUrl;
     private readonly string ippServicePrinterPath;
-    private readonly string badgesApiPath;
+    private readonly string badgesV1ApiPath;
+    private readonly string badgesV2ApiPath;
+    private readonly bool useV1BadgeApi;
     private readonly HttpClient httpClient;
     private readonly Func<Task<string>>? refreshPrinterToken;
     private int requestIdCounter;
@@ -27,17 +31,43 @@ public class PrinterIppClient : IDisposable
     public PrinterIppClient(
         string ippServiceBaseUrl,
         string ippServicePrinterPath,
-        string badgesApiPath,
-        Func<Task<string>>? refreshPrinterToken = null)
+        string badgesV1ApiPath,
+        string badgesV2ApiPath,
+        bool useV1BadgeApi,
+        Func<Task<string>>? refreshPrinterToken = null,
+        HttpMessageHandler? httpMessageHandler = null)
     {
         this.ippServiceBaseUrl = ippServiceBaseUrl.TrimEnd('/');
         this.ippServicePrinterPath = ippServicePrinterPath;
-        this.badgesApiPath = badgesApiPath;
+        this.badgesV1ApiPath = badgesV1ApiPath;
+        this.badgesV2ApiPath = badgesV2ApiPath;
+        this.useV1BadgeApi = useV1BadgeApi;
         this.refreshPrinterToken = refreshPrinterToken;
-        httpClient = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+        httpClient = httpMessageHandler == null
+            ? new HttpClient()
+            : new HttpClient(httpMessageHandler);
+        httpClient.Timeout = TimeSpan.FromMinutes(5);
     }
 
     public void Dispose() => httpClient.Dispose();
+
+    /// <summary>
+    /// Advertises that this printer supports badge-authorized secure release.
+    /// </summary>
+    public async Task<ushort> AdvertiseBadgeReleaseCapabilityAsync(
+        string printerToken,
+        string printerId)
+    {
+        var ippHost = new Uri(ippServiceBaseUrl).Host;
+        var printerUri = $"ipps://{ippHost}/printers/{printerId}";
+        var ippRequest = MinimalIpp.BuildBadgeReleaseCapabilitiesRequest(
+            requestId: NextRequestId(),
+            printerUri: printerUri,
+            outputDeviceUuid: printerId);
+
+        var responseData = await SendIppRequestAsync(printerToken, ippRequest);
+        return MinimalIpp.ParseStatusCodeResponse(responseData);
+    }
 
     /// <summary>
     /// Returns the next IPP request-id. IPP request-ids must be non-zero and are expected to
@@ -47,45 +77,92 @@ public class PrinterIppClient : IDisposable
 
     /// <summary>
     /// Calls the IPPService BadgesController to resolve a badge ID to a user.
-    /// GET /api/v1.0/badges/{badgeId}
+    /// Uses V2 by default, with V1 available for compatibility.
     /// Returns (badgeId, userUri, userId, userIdPresent) or null if not found.
     /// </summary>
     public async Task<(string BadgeId, string UserUri, string? UserId, bool UserIdPresent)?> ResolveBadgeAsync(
         string printerToken, string badgeId)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get,
-            $"{ippServiceBaseUrl}{badgesApiPath}/{Uri.EscapeDataString(badgeId)}");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", printerToken);
+        var token = printerToken;
+        var refreshed = false;
 
-        var response = await httpClient.SendAsync(request);
-        var body = await response.Content.ReadAsStringAsync();
-
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        while (true)
         {
-            return null;
+            using var request = CreateBadgeLookupRequest(badgeId);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            await WriteBadgeLookupRequestAsync(request);
+
+            using var response = await httpClient.SendAsync(request);
+            var body = await response.Content.ReadAsStringAsync();
+
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
+                !refreshed &&
+                refreshPrinterToken != null)
+            {
+                ConsoleHelper.WriteWarning(
+                    "Printer token expired during badge lookup — refreshing and retrying...");
+                token = await refreshPrinterToken();
+                refreshed = true;
+                continue;
+            }
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return null;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"Badge resolution failed: {response.StatusCode} - {body}");
+            }
+
+            var doc = JsonSerializer.Deserialize<JsonElement>(body);
+            var resolvedBadgeId = doc.GetProperty("badgeId").GetString()!;
+            var userUri = doc.GetProperty("userURI").GetString()!;
+            var userIdPresent = doc.TryGetProperty("userId", out var uidProp);
+            string? userId = userIdPresent && uidProp.ValueKind != JsonValueKind.Null
+                ? uidProp.GetString()
+                : null;
+
+            return (resolvedBadgeId, userUri, userId, userIdPresent);
+        }
+    }
+
+    private static async Task WriteBadgeLookupRequestAsync(HttpRequestMessage request)
+    {
+        ConsoleHelper.WriteInfo($"Badge lookup request: {request.Method} {request.RequestUri}");
+
+        if (request.Content != null)
+        {
+            ConsoleHelper.WriteInfo($"Badge lookup request body: {await request.Content.ReadAsStringAsync()}");
+        }
+    }
+
+    private HttpRequestMessage CreateBadgeLookupRequest(string badgeId)
+    {
+        if (useV1BadgeApi)
+        {
+            return new HttpRequestMessage(HttpMethod.Get,
+                $"{ippServiceBaseUrl}{badgesV1ApiPath}/{Uri.EscapeDataString(badgeId)}");
         }
 
-        if (!response.IsSuccessStatusCode)
+        var requestBody = JsonSerializer.Serialize(new
         {
-            throw new HttpRequestException($"Badge resolution failed: {response.StatusCode} - {body}");
-        }
+            badgeId
+        });
 
-        var doc = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(body);
-        var resolvedBadgeId = doc.GetProperty("badgeId").GetString()!;
-        var userUri = doc.GetProperty("userURI").GetString()!;
-        var userIdPresent = doc.TryGetProperty("userId", out var uidProp);
-        string? userId = userIdPresent && uidProp.ValueKind != System.Text.Json.JsonValueKind.Null
-            ? uidProp.GetString()
-            : null;
-
-        return (resolvedBadgeId, userUri, userId, userIdPresent);
+        return new HttpRequestMessage(HttpMethod.Post, $"{ippServiceBaseUrl}{badgesV2ApiPath}")
+        {
+            Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
+        };
     }
 
     /// <summary>
     /// Sends Get-Jobs IPP request as the printer to find fetchable jobs for a user.
-    /// Returns list of (jobId, jobUri) tuples.
+    /// Returns the IPP status and list of (jobId, jobUri) tuples.
     /// </summary>
-    public async Task<List<(int JobId, string JobUri)>> GetJobsAsync(
+    public async Task<IppGetJobsResult> GetJobsAsync(
         string printerToken, string printerId, string requestingUserUri)
     {
         var ippHost = new Uri(ippServiceBaseUrl).Host;
@@ -105,7 +182,7 @@ public class PrinterIppClient : IDisposable
         if (statusCode != 0x0000) // 0x0000 = successful-ok
         {
             ConsoleHelper.WriteWarning($"Get-Jobs returned status: {statusCode:X4}");
-            return new List<(int, string)>();
+            return new IppGetJobsResult(statusCode, []);
         }
 
         var jobs = new List<(int JobId, string JobUri)>();
@@ -131,7 +208,7 @@ public class PrinterIppClient : IDisposable
             }
         }
 
-        return jobs;
+        return new IppGetJobsResult(statusCode, jobs);
     }
 
     /// <summary>
@@ -314,4 +391,8 @@ public class PrinterIppClient : IDisposable
                 $"IPP request failed: {(int)response.StatusCode} {response.StatusCode} - {errorBody}");
         }
     }
+
+    public sealed record IppGetJobsResult(
+        ushort StatusCode,
+        List<(int JobId, string JobUri)> Jobs);
 }

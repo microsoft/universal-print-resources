@@ -2,6 +2,8 @@
 //     Copyright (c) Microsoft Corporation. All rights reserved.
 // </copyright>
 
+using System.CommandLine;
+using System.Diagnostics;
 using System.Text.Json;
 using BadgeReleaseDemo.Auth;
 using BadgeReleaseDemo.GraphApi;
@@ -18,19 +20,54 @@ namespace BadgeReleaseDemo;
 ///   2. Register a virtual printer
 ///   3. Share the printer (with jobs held for secure release)
 ///   4. Create a badge collection and add a badge
-///   5. Submit a PDF print job
-///   6. Simulate badge scan → resolve badge → IPP fetch → open document → complete job
+///   5. Advertise badge release support
+///   6. Submit a PDF print job and verify it remains held
+///   7. Resolve the badge, verify the job becomes fetchable, fetch it, and complete it
 /// </summary>
 public class Program
 {
-    public static async Task Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+        var rootCommand = CreateRootCommand();
+        return await rootCommand.Parse(NormalizeArguments(args)).InvokeAsync();
+    }
+
+    internal static RootCommand CreateRootCommand()
+    {
+        var rootCommand = new RootCommand(
+            "Universal Print Badge Release demo and badge management utility.");
+
+        var demoUseV1Option = CreateUseV1BadgeApiOption();
+        var demoCommand = new Command("demo", "Run the full interactive badge release workflow");
+        demoCommand.Options.Add(demoUseV1Option);
+        demoCommand.SetAction(async parseResult =>
+        {
+            return await RunDemoAsync(parseResult.GetValue(demoUseV1Option));
+        });
+
+        rootCommand.Subcommands.Add(demoCommand);
+        rootCommand.Subcommands.Add(BadgeManagementCommands.Create());
+        return rootCommand;
+    }
+
+    internal static string[] NormalizeArguments(string[] args) =>
+        args.Length == 0 ? ["--help"] : args;
+
+    private static Option<bool> CreateUseV1BadgeApiOption() =>
+        new("--use-v1-badge-api")
+        {
+            Description = "Use the legacy V1 badge lookup API during the demo"
+        };
+
+    private static async Task<int> RunDemoAsync(bool useV1BadgeApi)
+    {
         ConsoleHelper.WriteHeader("🏷️  Universal Print — Badge Release Demo");
 
         // Load configuration
-        var config = LoadConfiguration();
+        var config = LoadConfiguration("appsettings.json");
+        var badgeApiConfig = LoadConfiguration("badgeapisettings.json");
         var appId = config.GetProperty("AppId").GetString()!;
         var tenantId = config.TryGetProperty("Tenant", out var tid) ? tid.GetString() ?? string.Empty : string.Empty;
         var graphBaseUrl = config.GetProperty("GraphBaseUrl").GetString()!;
@@ -38,22 +75,35 @@ public class Program
         var registrationBaseUrl = config.GetProperty("RegistrationBaseUrl").GetString()!;
         var ippServiceBaseUrl = config.GetProperty("IppServiceBaseUrl").GetString()!;
         var ippServicePrinterPath = config.GetProperty("IppServicePrinterPath").GetString()!;
-        var badgesApiPath = config.GetProperty("BadgesApiPath").GetString()!;
-
+        var badgesV1ApiPath = badgeApiConfig.GetProperty("BadgesV1ApiPath").GetString()!;
+        var badgesV2ApiPath = badgeApiConfig.GetProperty("BadgesV2ApiPath").GetString()!;
         if (appId == "YOUR_APP_ID_HERE" || tenantId == "YOUR_TENANT_HERE")
         {
             ConsoleHelper.WriteError("Please set your App ID and Tenant in appsettings.json before running this demo.");
-            return;
+            return 1;
         }
 
         // Initialize services
         var auth = new AuthHelper(appId, tenantId);
+        string printerToken = string.Empty;
+
+        async Task<string> RefreshAndStorePrinterTokenAsync()
+        {
+            printerToken = await auth.RefreshPrinterTokenAsync();
+            return printerToken;
+        }
+
         using var printerReg = new PrinterRegistration(registrationBaseUrl);
         using var printerShare = new PrinterSharing(graphBaseUrl);
         using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl);
         using var jobSubmission = new PrintJobSubmission(graphBaseUrl);
         using var ippClient = new PrinterIppClient(
-            ippServiceBaseUrl, ippServicePrinterPath, badgesApiPath, auth.RefreshPrinterTokenAsync);
+            ippServiceBaseUrl,
+            ippServicePrinterPath,
+            badgesV1ApiPath,
+            badgesV2ApiPath,
+            useV1BadgeApi,
+            RefreshAndStorePrinterTokenAsync);
 
 
         string printerId = string.Empty;
@@ -105,8 +155,17 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", "Creating badge collection...");
             token = await auth.GetUserTokenAsync();
-            badgeCollectionId = await badgeMgmt.CreateBadgeCollectionAsync(token);
-            ConsoleHelper.WriteSuccess($"Badge collection ready (ID: {badgeCollectionId}).");
+            var collectionResult = await badgeMgmt.CreateBadgeCollectionAsync(token);
+            badgeCollectionId = collectionResult.Id;
+            if (collectionResult.Created)
+            {
+                ConsoleHelper.WriteSuccess($"Badge collection provisioning completed (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
+            }
+            else
+            {
+                ConsoleHelper.WriteSuccess($"Using existing badge collection (ID: {badgeCollectionId}).");
+            }
 
             // ═══════════════════════════════════════════════════════════
             // Step 5: Prompt for badge ID and create badge
@@ -118,7 +177,7 @@ public class Program
             if (string.IsNullOrWhiteSpace(badgeId))
             {
                 ConsoleHelper.WriteError("Badge ID cannot be empty.");
-                return;
+                return 1;
             }
 
             // ═══════════════════════════════════════════════════════════
@@ -131,7 +190,29 @@ public class Program
             ConsoleHelper.WriteSuccess($"Badge '{badgeId}' mapped to {auth.UserUpn}.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 7: Submit a PDF print job
+            // Step 7: Advertise badge release support
+            // ═══════════════════════════════════════════════════════════
+            ConsoleHelper.WriteStep("🔐", "Configuring printer badge release capability...");
+            ConsoleHelper.WriteProgress("Acquiring printer device token...");
+            printerToken = await auth.GetPrinterTokenAsync();
+            ConsoleHelper.WriteSuccess("Printer authenticated.");
+
+            ConsoleHelper.WriteProgress("Advertising badge release capability...");
+            var capabilityStatus = await ippClient.AdvertiseBadgeReleaseCapabilityAsync(
+                printerToken,
+                printerId);
+            if (capabilityStatus != 0x0000)
+            {
+                ConsoleHelper.WriteError(
+                    $"Update-Output-Device-Attributes failed: {capabilityStatus:X4}");
+                return 1;
+            }
+
+            ConsoleHelper.WriteSuccess(
+                "Printer advertised job-release-action-supported=owner-authorized-badge.");
+
+            // ═══════════════════════════════════════════════════════════
+            // Step 8: Submit a PDF print job
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("📄", "Submitting print job...");
 
@@ -146,7 +227,7 @@ public class Program
                 if (!File.Exists(bundledPdfPath))
                 {
                     ConsoleHelper.WriteError("PDF path cannot be empty.");
-                    return;
+                    return 1;
                 }
 
                 pdfPath = bundledPdfPath;
@@ -157,7 +238,7 @@ public class Program
             if (!File.Exists(pdfPath))
             {
                 ConsoleHelper.WriteError($"File not found: {pdfPath}");
-                return;
+                return 1;
             }
 
             graphToken = await auth.GetGraphTokenAsync();
@@ -177,13 +258,66 @@ public class Program
             ConsoleHelper.WriteSuccess("Print job submitted and started.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 8: Acquire printer device token + simulate badge scan
+            // Step 9: Verify secure-release holding before badge scan
+            // ═══════════════════════════════════════════════════════════
+            if (!int.TryParse(jobId, out var submittedJobId))
+            {
+                ConsoleHelper.WriteError(
+                    $"Graph job ID '{jobId}' cannot be validated as an IPP job ID.");
+                return 1;
+            }
+
+            ConsoleHelper.WriteStep("🔒", "Verifying the job is held before badge authentication...");
+            var preReleaseObservationDuration = TimeSpan.FromSeconds(90);
+            var preReleaseObservationEndsAt = DateTime.UtcNow.Add(preReleaseObservationDuration);
+            ConsoleHelper.WriteProgress(
+                $"Observing job visibility for {preReleaseObservationDuration.TotalSeconds:0} seconds...");
+            while (true)
+            {
+                var preReleaseResult = await ippClient.GetJobsAsync(
+                    printerToken,
+                    printerId,
+                    string.Empty);
+                if (preReleaseResult.StatusCode != 0x0000)
+                {
+                    ConsoleHelper.WriteError(
+                        $"Could not verify secure-release holding because Get-Jobs failed: " +
+                        $"{preReleaseResult.StatusCode:X4}.");
+                    return 1;
+                }
+
+                if (FindJobById(preReleaseResult.Jobs, submittedJobId) != null)
+                {
+                    ConsoleHelper.WriteError(
+                        $"Submitted job {submittedJobId} was fetchable before badge authentication. " +
+                        "Secure-release holding is not working.");
+                    return 1;
+                }
+
+                var remainingObservationTime = preReleaseObservationEndsAt - DateTime.UtcNow;
+                if (remainingObservationTime <= TimeSpan.Zero)
+                {
+                    break;
+                }
+
+                var delay = TimeSpan.FromSeconds(
+                    Math.Min(5, remainingObservationTime.TotalSeconds));
+                ConsoleHelper.WriteInfo(
+                    $"Submitted job {submittedJobId} remains unavailable before badge authentication. " +
+                    $"Checking again in {delay.TotalSeconds:0.#} seconds...");
+                await Task.Delay(delay);
+            }
+
+            ConsoleHelper.WriteSuccess(
+                $"Confirmed submitted job {submittedJobId} remained unavailable for " +
+                $"{preReleaseObservationDuration.TotalSeconds:0} seconds " +
+                "before badge authentication.");
+
+            // ═══════════════════════════════════════════════════════════
+            // Step 10: Simulate badge scan
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", "Simulating badge scan at the printer...");
             ConsoleHelper.WriteInfo("Imagine you are walking up to the printer and scanning your badge.");
-            ConsoleHelper.WriteProgress("Acquiring printer device token...");
-            var printerToken = await auth.GetPrinterTokenAsync();
-            ConsoleHelper.WriteSuccess("Printer authenticated.");
 
             // Badge scan retry loop
             string? resolvedUserUri = null;
@@ -200,7 +334,7 @@ public class Program
                 }
 
                 // ═══════════════════════════════════════════════════════
-                // Step 9: Resolve badge via IPPService BadgesController
+                // Step 11: Resolve badge via IPPService BadgesController
                 // ═══════════════════════════════════════════════════════
                 ConsoleHelper.WriteStep("🔍", $"Resolving badge '{scannedBadgeId}'...");
                 try
@@ -230,60 +364,67 @@ public class Program
             }
 
             // ═══════════════════════════════════════════════════════════
-            // Step 10: Get-Jobs as printer with requesting-user-uri
+            // Step 12: Verify the job is fetchable after badge authentication
             // ═══════════════════════════════════════════════════════════
-            ConsoleHelper.WriteStep("🖨️", "Printer: Getting fetchable jobs...");
-            var jobs = await ippClient.GetJobsAsync(printerToken, printerId, resolvedUserUri!);
-
-            if (jobs.Count == 0)
+            ConsoleHelper.WriteStep("🖨️", "Verifying the badge-authenticated job is fetchable...");
+            var postAuthenticationPollingDuration = TimeSpan.FromSeconds(90);
+            var pollingInterval = TimeSpan.FromSeconds(5);
+            var postAuthenticationStopwatch = Stopwatch.StartNew();
+            (int JobId, string JobUri)? selectedJob = null;
+            List<(int JobId, string JobUri)> jobs = [];
+            while (selectedJob == null)
             {
-                ConsoleHelper.WriteWarning("No fetchable jobs found for this user.");
-                ConsoleHelper.WriteInfo("The job may not be ready yet. In production, the printer would poll.");
-                return;
-            }
-
-            var selectedJob = jobs[0];
-            if (int.TryParse(jobId, out var submittedJobId))
-            {
-                var attemptsRemaining = 6;
-                while (true)
+                var getJobsResult = await ippClient.GetJobsAsync(
+                    printerToken,
+                    printerId,
+                    resolvedUserUri!);
+                if (getJobsResult.StatusCode != 0x0000)
                 {
-                    bool found = false;
-                    foreach (var candidate in jobs)
-                    {
-                        if (candidate.JobId == submittedJobId)
-                        {
-                            selectedJob = candidate;
-                            found = true;
-                            break;
-                        }
-                    }
-
-                    if (found)
-                    {
-                        break;
-                    }
-
-                    attemptsRemaining--;
-                    if (attemptsRemaining <= 0)
-                    {
-                        ConsoleHelper.WriteError($"Submitted job {submittedJobId} was not found in fetchable jobs.");
-                        return;
-                    }
-
-                    ConsoleHelper.WriteInfo($"Submitted job {submittedJobId} not fetchable yet. Polling again in 5 seconds...");
-                    await Task.Delay(TimeSpan.FromSeconds(5));
-                    jobs = await ippClient.GetJobsAsync(printerToken, printerId, resolvedUserUri!);
+                    ConsoleHelper.WriteError(
+                        $"Could not verify badge-authenticated job visibility because Get-Jobs failed: " +
+                        $"{getJobsResult.StatusCode:X4}.");
+                    return 1;
                 }
-            }
-            else
-            {
-                ConsoleHelper.WriteWarning($"Could not parse Graph job ID '{jobId}' as IPP integer. Using the first fetchable job.");
+
+                jobs = getJobsResult.Jobs;
+                if (jobs.Count == 0)
+                {
+                    ConsoleHelper.WriteInfo("Get-Jobs returned no fetchable jobs.");
+                }
+                else
+                {
+                    ConsoleHelper.WriteInfo(
+                        $"Get-Jobs returned IPP job ID(s): {string.Join(", ", jobs.Select(job => job.JobId))}");
+                }
+
+                selectedJob = FindJobById(jobs, submittedJobId);
+                if (selectedJob != null)
+                {
+                    break;
+                }
+
+                var delay = GetNextPollingDelay(
+                    postAuthenticationStopwatch.Elapsed,
+                    postAuthenticationPollingDuration,
+                    pollingInterval);
+                if (delay == null)
+                {
+                    ConsoleHelper.WriteError(
+                        $"Submitted job {submittedJobId} was not fetchable after badge authentication.");
+                    return 1;
+                }
+
+                ConsoleHelper.WriteInfo(
+                    $"Submitted job {submittedJobId} not fetchable yet. " +
+                    $"Polling again in {delay.Value.TotalSeconds:0.#} seconds...");
+                await Task.Delay(delay.Value);
             }
 
-            resolvedJobId = selectedJob.JobId;
-            resolvedJobUri = selectedJob.JobUri;
-            ConsoleHelper.WriteSuccess($"Found {jobs.Count} fetchable job(s).");
+            resolvedJobId = selectedJob.Value.JobId;
+            resolvedJobUri = selectedJob.Value.JobUri;
+            ConsoleHelper.WriteSuccess(
+                $"Confirmed submitted job {resolvedJobId} is fetchable after badge authentication.");
+            ConsoleHelper.WriteInfo($"Found {jobs.Count} fetchable job(s) for the user.");
             ConsoleHelper.WriteKeyValue("Fetching Job ID", resolvedJobId.ToString());
             if (!string.IsNullOrEmpty(resolvedJobUri))
             {
@@ -291,7 +432,7 @@ public class Program
             }
 
             // ═══════════════════════════════════════════════════════════
-            // Step 11: Fetch-Job (get job metadata)
+            // Step 13: Fetch-Job (get job metadata)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Printer: Fetching job metadata...");
             var (fetchJobStatusCode, _, _) = await ippClient.FetchJobAsync(
@@ -300,13 +441,13 @@ public class Program
             if (fetchJobStatusCode != 0x0000) // 0x0000 = successful-ok
             {
                 ConsoleHelper.WriteError($"Fetch-Job failed: {fetchJobStatusCode:X4}");
-                return;
+                return 1;
             }
 
             ConsoleHelper.WriteSuccess("Job metadata received.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 12: Acknowledge-Job
+            // Step 14: Acknowledge-Job
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🖨️", "Printer: Acknowledging job...");
             var ackStatus = await ippClient.AcknowledgeJobAsync(
@@ -315,13 +456,13 @@ public class Program
             if (ackStatus != 0x0000) // 0x0000 = successful-ok
             {
                 ConsoleHelper.WriteError($"Acknowledge-Job failed: {ackStatus:X4}");
-                return;
+                return 1;
             }
 
             ConsoleHelper.WriteSuccess("Job acknowledged.");
 
             // ═══════════════════════════════════════════════════════════
-            // Step 13: Fetch-Document (download PDF)
+            // Step 15: Fetch-Document (download PDF)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("📄", "Printer: Downloading document...");
             var documentData = await ippClient.FetchDocumentAsync(
@@ -330,7 +471,7 @@ public class Program
             if (documentData == null || documentData.Length == 0)
             {
                 ConsoleHelper.WriteError("Failed to download document.");
-                return;
+                return 1;
             }
 
             ConsoleHelper.WriteSuccess($"Document downloaded ({documentData.Length} bytes).");
@@ -339,7 +480,7 @@ public class Program
             savedDocumentPath = PrinterIppClient.SaveAndOpenDocument(documentData);
 
             // ═══════════════════════════════════════════════════════════
-            // Step 14: Update-Job-Status → Completed
+            // Step 16: Update-Job-Status → Completed
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("✅", "Printer: Marking job as completed...");
             var completeStatus = await ippClient.UpdateJobStatusAsync(
@@ -348,7 +489,7 @@ public class Program
             if (completeStatus != 0x0000) // 0x0000 = successful-ok
             {
                 ConsoleHelper.WriteError($"Update-Job-Status failed: {completeStatus:X4}");
-                return;
+                return 1;
             }
 
             ConsoleHelper.WriteSuccess("Job marked as completed! 🎉");
@@ -357,11 +498,13 @@ public class Program
             ConsoleHelper.WriteInfo("The Badge Release flow completed successfully.");
             ConsoleHelper.WriteInfo("Press any key to exit.");
             Console.ReadKey();
+            return 0;
         }
         catch (Exception ex)
         {
             ConsoleHelper.WriteError($"Demo failed: {ex.Message}");
             ConsoleHelper.WriteInfo(ex.StackTrace ?? string.Empty);
+            return 1;
         }
         finally
         {
@@ -377,8 +520,18 @@ public class Program
                     {
                         ConsoleHelper.WriteProgress($"Deleting badge '{createdBadgeId}'...");
                         var printToken = await auth.GetUserTokenAsync();
-                        await badgeMgmt.DeleteBadgeAsync(printToken, badgeCollectionId, createdBadgeId);
-                        ConsoleHelper.WriteSuccess("Badge deleted.");
+                        var badgeDeleted = await badgeMgmt.DeleteBadgeAsync(
+                            printToken,
+                            badgeCollectionId,
+                            createdBadgeId);
+                        if (badgeDeleted)
+                        {
+                            ConsoleHelper.WriteSuccess("Badge deleted.");
+                        }
+                        else
+                        {
+                            ConsoleHelper.WriteWarning("Badge was already absent.");
+                        }
                     }
                     catch (Exception badgeCleanupEx)
                     {
@@ -392,8 +545,15 @@ public class Program
                     {
                         var graphToken = await auth.GetGraphTokenAsync();
                         ConsoleHelper.WriteProgress($"Deleting share {shareId}...");
-                        await printerShare.DeleteShareAsync(graphToken, shareId);
-                        ConsoleHelper.WriteSuccess("Share deleted.");
+                        var shareDeleted = await printerShare.DeleteShareAsync(graphToken, shareId);
+                        if (shareDeleted)
+                        {
+                            ConsoleHelper.WriteSuccess("Share deleted.");
+                        }
+                        else
+                        {
+                            ConsoleHelper.WriteWarning("Share was already absent.");
+                        }
                     }
                     catch (Exception shareCleanupEx)
                     {
@@ -407,8 +567,15 @@ public class Program
                     {
                         var graphToken = await auth.GetGraphTokenAsync();
                         ConsoleHelper.WriteProgress($"Deleting printer {printerId}...");
-                        await printerShare.DeletePrinterAsync(graphToken, printerId);
-                        ConsoleHelper.WriteSuccess("Printer deleted.");
+                        var printerDeleted = await printerShare.DeletePrinterAsync(graphToken, printerId);
+                        if (printerDeleted)
+                        {
+                            ConsoleHelper.WriteSuccess("Printer deleted.");
+                        }
+                        else
+                        {
+                            ConsoleHelper.WriteWarning("Printer was already absent.");
+                        }
                     }
                     catch (Exception printerCleanupEx)
                     {
@@ -434,13 +601,44 @@ public class Program
         }
     }
 
-    private static JsonElement LoadConfiguration()
+    internal static (int JobId, string JobUri)? FindJobById(
+        IEnumerable<(int JobId, string JobUri)> jobs,
+        int jobId)
     {
-        var configPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+        foreach (var job in jobs)
+        {
+            if (job.JobId == jobId)
+            {
+                return job;
+            }
+        }
+
+        return null;
+    }
+
+    internal static TimeSpan? GetNextPollingDelay(
+        TimeSpan elapsed,
+        TimeSpan pollingDuration,
+        TimeSpan pollingInterval)
+    {
+        var remaining = pollingDuration - elapsed;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return null;
+        }
+
+        return remaining < pollingInterval ? remaining : pollingInterval;
+    }
+
+    private static JsonElement LoadConfiguration(string fileName)
+    {
+        var configPath = Path.Combine(AppContext.BaseDirectory, fileName);
 
         if (!File.Exists(configPath))
         {
-            throw new FileNotFoundException("appsettings.json not found. Make sure it's in the output directory.", configPath);
+            throw new FileNotFoundException(
+                $"{fileName} not found. Make sure it's in the output directory.",
+                configPath);
         }
 
         var json = File.ReadAllText(configPath);

@@ -1,6 +1,6 @@
 # Badge Release Demo
 
-An interactive console application that demonstrates the full [Universal Print](https://learn.microsoft.com/universal-print/) badge release lifecycle — from printer registration and badge setup to badge-swipe-triggered job release.
+A console application that demonstrates the full [Universal Print](https://learn.microsoft.com/universal-print/) badge release lifecycle and provides focused commands for managing badge collections and mappings.
 
 > **⚠️ IMPORTANT DISCLAIMER:** This demo is provided for **educational purposes only and must not be used as is**. It is intended as a reference to help you build your own scripts and applications. Note that it registers real printers and shares against your tenant; the demo cleans these resources up at the end, but you are responsible for verifying nothing is left behind.
 
@@ -20,18 +20,19 @@ The app walks through the complete lifecycle interactively:
 |------|-------------|-----------|
 | 1. **Sign in** | Authenticate as a Printer Administrator | MSAL interactive auth |
 | 2. **Register printer** | Create a virtual printer with an in-memory certificate | `POST register.print.microsoft.com/api/v1.0/register` |
-| 3. **Share printer** | Make the printer available to all users, holding jobs for secure release (`holdJobsForSecureRelease = true`) | `POST graph.microsoft.com/v1.0/print/shares` |
+| 3. **Share printer** | Create the share, enable secure-release holding, and validate that it is enabled | `POST graph.microsoft.com/v1.0/print/shares`, `PATCH` and `GET graph.microsoft.com/beta/print/shares/{id}` |
 | 4. **Create badge collection** | Provision a badge collection for the tenant (idempotent) | `POST graph.print.microsoft.com/v1.0/print/badgeCollections` |
 | 5. **Add badge** | Map a user-provided badge ID to the signed-in user | `POST graph.print.microsoft.com/v1.0/print/badgeCollections/{id}/badges` |
-| 6. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
-| 7. **Acquire printer token** | Obtain a device token for the printer via JWT-bearer flow | `POST {deviceTokenUrl}` |
-| 8. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `GET print.print.microsoft.com/api/v1.0/badges/{badgeId}` |
-| 9. **Get-Jobs** | Find fetchable jobs for the resolved user (IPP) | IPP Get-Jobs |
-| 10. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
-| 11. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
-| 12. **Fetch-Document** | Download the print document (IPP) | IPP Fetch-Document |
-| 13. **Complete job** | Mark the job as completed (IPP) | IPP Update-Job-Status |
-| 14. **Clean up** | Delete badge, share, printer, and local files | Graph + Badge APIs |
+| 6. **Advertise badge release** | Acquire a printer token and advertise `job-release-action-supported=owner-authorized-badge` before any job is submitted | `POST {deviceTokenUrl}`, IPP Update-Output-Device-Attributes |
+| 7. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
+| 8. **Verify job is held** | Observe for 90 seconds that the submitted job never becomes fetchable before badge authentication, matching the post-authentication propagation budget | IPP Get-Jobs |
+| 9. **Resolve badge** | Simulate a badge tap — resolve the badge ID to a user via Universal Print | `POST print.print.microsoft.com/api/v2.0/badges/lookup` |
+| 10. **Verify job is eligible** | Poll until that exact submitted job is fetchable for the resolved user | IPP Get-Jobs |
+| 11. **Fetch-Job** | Retrieve job metadata (IPP) | IPP Fetch-Job |
+| 12. **Acknowledge-Job** | Confirm receipt of the job (IPP) | IPP Acknowledge-Job |
+| 13. **Fetch-Document** | Download the print document (IPP) | IPP Fetch-Document |
+| 14. **Complete job** | Mark the job as completed (IPP) | IPP Update-Job-Status |
+| 15. **Clean up** | Delete badge, share, printer, and local files | Graph + Badge APIs |
 
 ## Prerequisites
 
@@ -84,7 +85,8 @@ These permissions are granted to the app itself (not delegated) and appear as `r
 
 ## Configuration
 
-Edit `appsettings.json`:
+Build the app, then edit the generated `appsettings.json` beside the executable
+(for example, `bin\Debug\net8.0\appsettings.json`):
 
 ```json
 {
@@ -98,7 +100,18 @@ Edit `appsettings.json`:
 | `AppId` | Your Entra ID app registration client ID (GUID) | `a1b2c3d4-e5f6-7890-abcd-ef1234567890` |
 | `Tenant` | Your tenant domain or GUID | `contoso.onmicrosoft.com` or a tenant GUID |
 
+Keep the checked-in `appsettings.json` placeholders unchanged so personal tenant
+values are not accidentally committed to this public repository. Builds create the
+generated configuration only when it is missing and never overwrite an existing
+output copy. If the output directory is deleted or cleaned, configure the newly
+generated file again.
+
 The remaining settings point to commercial production Universal Print endpoints.
+Badge API route versions are maintained by the demo in `badgeapisettings.json`; this
+file is copied to the output directory on every build and normally should not be
+user-configured. Builds leave generated `appsettings.json` writable and mark generated
+`badgeapisettings.json` read-only. Subsequent builds can replace the read-only route
+file and then restore that protection.
 
 ### Government Cloud
 
@@ -106,22 +119,86 @@ Government cloud is not supported by this demo today. Badge Release APIs in this
 
 ## Build & Run
 
-1. Update `appsettings.json` with your Entra ID **Tenant** and **AppId** (from the app registration above).
-2. Build and run:
+1. Build the app:
 
 ```powershell
 dotnet build
-dotnet run
+dotnet test BadgeReleaseDemo.sln
 ```
 
-The app will walk you through each step interactively, prompting for a badge ID and PDF file path. At the end, all created cloud resources (printer, share, badge) are automatically cleaned up.
+2. Update `bin\Debug\net8.0\appsettings.json` with your Entra ID **Tenant** and
+   **AppId** (from the app registration above).
+3. Run the full interactive demo without rebuilding:
+
+```powershell
+dotnet run --no-build -- demo
+```
+
+The `demo` command walks through each step interactively, prompting for a badge ID
+and PDF file path. At the end, all created cloud resources (printer, share, badge)
+are automatically cleaned up.
+
+Running with no command prints the root usage instructions instead of performing live
+tenant operations:
+
+```powershell
+dotnet run --no-build
+```
+
+Use `dotnet run --no-build -- --help` to display the same usage explicitly. To run
+the demo with the legacy badge lookup API, use:
+
+```powershell
+dotnet run --no-build -- demo --use-v1-badge-api
+```
+
+## Badge Management Commands
+
+Badge management commands acquire the delegated Universal Print token through the
+same interactive MSAL sign-in as the demo. You do not need to acquire or pass an
+access token separately.
+
+```powershell
+# Collections
+dotnet run -- badges collections list
+dotnet run -- badges collections create
+dotnet run -- badges collections delete --collection-id <collection-id>
+dotnet run -- badges collections delete --collection-id <collection-id> --force
+
+# Badge mappings
+dotnet run -- badges mappings list --collection-id <collection-id>
+dotnet run -- badges mappings get --collection-id <collection-id> --badge-id <badge-id>
+dotnet run -- badges mappings create --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn>
+dotnet run -- badges mappings create --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn> --user-id <user-id>
+dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --upn <new-upn>
+dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn> --user-id <new-user-id>
+dotnet run -- badges mappings delete --collection-id <collection-id> --badge-id <badge-id>
+```
+
+`--collection-id` may be omitted when the tenant has exactly one badge collection.
+When zero or multiple collections exist, the command reports the available next step
+instead of selecting a collection implicitly. Collection deletion prompts for
+confirmation unless `--force` is specified.
+
+Badge collections fit in one service response, so collection listing does not paginate.
+Badge mapping listing is not implemented by the service yet. The CLI reports the
+resulting `501 Not Implemented` response without treating it as an authentication or
+connectivity failure.
+
+Updating a mapping replaces its identity fields rather than merging omitted values.
+`--upn` is therefore required when changing `--user-id`; provide the mapping's current
+UPN when it is not changing.
+
+CSV import is not currently included.
 
 ## Project Structure
 
 ```
 BadgeReleaseDemo/
-├── Program.cs                          # Main orchestration — runs the 14-step flow
+├── Program.cs                          # CLI root and full demo orchestration
+├── BadgeManagementCommands.cs         # Badge collection and mapping commands
 ├── appsettings.json                    # App ID, tenant, and service endpoints
+├── badgeapisettings.json               # App-owned V1 and V2 badge API routes
 │
 ├── Auth/
 │   └── AuthHelper.cs                   # MSAL interactive auth + JWT-bearer device token flow
@@ -142,6 +219,11 @@ BadgeReleaseDemo/
 │
 └── Resources/
     └── SampleDocument.pdf              # Default test PDF (or supply your own)
+
+BadgeReleaseDemo.Tests/
+├── CommandLineTests.cs                 # Command routing and V1 option scope
+├── BadgeManagementTests.cs             # Collection polling and mapping update contracts
+└── PrinterIppClientTests.cs            # V1 and V2 badge lookup request shapes
 ```
 
 ## Authentication Flows
@@ -165,11 +247,26 @@ The printer authenticates using a certificate-based JWT-bearer flow:
 
 ## Badge API Reference
 
-The Badge API is a REST endpoint on the Universal Print IPP Service:
+The default V2 Badge API is a REST endpoint on the Universal Print IPP Service. It
+keeps the badge ID in the request body instead of the URL:
 
 ```
-GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}
+POST https://print.print.microsoft.com/api/v2.0/badges/lookup
 Authorization: Bearer {printer-device-token}
+```
+
+**Request body:**
+```json
+{
+  "badgeId": "123"
+}
+```
+
+Run the demo with `demo --use-v1-badge-api` to use the legacy
+`GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}` endpoint instead:
+
+```powershell
+dotnet run -- demo --use-v1-badge-api
 ```
 
 **Success response (200 OK):**
@@ -199,6 +296,7 @@ The `userURI` (a `mailto:` URI) is then passed as the `requesting-user-uri` attr
 |---------|-------------|-----|
 | `403 Forbidden` on badge resolution | Missing `PrintBadges.Read` app permission, or tenant not enrolled in the Badge Release preview | Grant the permission and admin-consent it in the Azure portal. If the feature is not enabled, see the note below. |
 | `401 Unauthorized` on IPP operations | Printer device token expired | The demo acquires a fresh token; if it persists, re-run |
+| `404 Badge collection not found` when adding a badge after deleting and recreating a collection | Badge collection deletion and recreation can take time to settle across the service, even after the new collection reports that provisioning succeeded | Wait a few minutes, then retry adding the badge. Avoid repeatedly deleting and recreating collections during normal testing. |
 | No fetchable jobs found | Job not yet processed by the service | Wait a few seconds and retry; in production, printers poll |
 | `ServerErrorInternalError` on Update-Job-Status | Job may already be in a terminal state | Check the correlation headers in the console output and investigate server-side |
 | Cleanup fails to delete PDF | File locked by PDF viewer (e.g., Adobe) | Close the viewer, then delete manually |
