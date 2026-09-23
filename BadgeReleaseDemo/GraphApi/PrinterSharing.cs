@@ -67,7 +67,16 @@ public class PrinterSharing : IDisposable
         }
         catch
         {
-            await DeleteShareAsync(accessToken, shareId);
+            try
+            {
+                await DeleteShareAsync(accessToken, shareId);
+            }
+            catch (Exception cleanupException)
+            {
+                ConsoleHelper.WriteWarning(
+                    $"Failed to delete share during rollback: {cleanupException.Message}");
+            }
+
             throw;
         }
     }

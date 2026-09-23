@@ -82,4 +82,29 @@ public class PrinterSharingTests
         Assert.Equal(HttpMethod.Delete, delete.Method);
         Assert.Equal("https://graph.example/v1.0/print/shares/share%2F1", delete.Uri);
     }
+
+    [Fact]
+    public async Task CreateShareAsync_PreservesSetupFailureWhenRollbackThrows()
+    {
+        var handler = new RecordingHttpMessageHandler((_, call) => call switch
+        {
+            0 => RecordingHttpMessageHandler.JsonResponse(
+                HttpStatusCode.Created,
+                """{"id":"share-1"}"""),
+            1 => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("invalid patch")
+            },
+            2 => throw new HttpRequestException("rollback transport failure"),
+            _ => throw new InvalidOperationException("Unexpected request.")
+        });
+        using var client = new PrinterSharing("https://graph.example/v1.0", handler);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.CreateShareAsync("access-token", "printer-1", "Demo printer"));
+
+        Assert.Contains("Failed to enable secure release", exception.Message);
+        Assert.DoesNotContain("rollback transport failure", exception.Message);
+        Assert.Equal(HttpMethod.Delete, handler.Requests[^1].Method);
+    }
 }
