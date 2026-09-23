@@ -520,8 +520,18 @@ public class Program
                     {
                         ConsoleHelper.WriteProgress($"Deleting badge '{createdBadgeId}'...");
                         var printToken = await auth.GetUserTokenAsync();
-                        await badgeMgmt.DeleteBadgeAsync(printToken, badgeCollectionId, createdBadgeId);
-                        ConsoleHelper.WriteSuccess("Badge deleted.");
+                        var badgeDeleted = await badgeMgmt.DeleteBadgeAsync(
+                            printToken,
+                            badgeCollectionId,
+                            createdBadgeId);
+                        if (badgeDeleted)
+                        {
+                            ConsoleHelper.WriteSuccess("Badge deleted.");
+                        }
+                        else
+                        {
+                            ConsoleHelper.WriteWarning("Badge was already absent.");
+                        }
                     }
                     catch (Exception badgeCleanupEx)
                     {
@@ -535,8 +545,15 @@ public class Program
                     {
                         var graphToken = await auth.GetGraphTokenAsync();
                         ConsoleHelper.WriteProgress($"Deleting share {shareId}...");
-                        await printerShare.DeleteShareAsync(graphToken, shareId);
-                        ConsoleHelper.WriteSuccess("Share deleted.");
+                        var shareDeleted = await printerShare.DeleteShareAsync(graphToken, shareId);
+                        if (shareDeleted)
+                        {
+                            ConsoleHelper.WriteSuccess("Share deleted.");
+                        }
+                        else
+                        {
+                            ConsoleHelper.WriteWarning("Share was already absent.");
+                        }
                     }
                     catch (Exception shareCleanupEx)
                     {
@@ -550,8 +567,15 @@ public class Program
                     {
                         var graphToken = await auth.GetGraphTokenAsync();
                         ConsoleHelper.WriteProgress($"Deleting printer {printerId}...");
-                        await printerShare.DeletePrinterAsync(graphToken, printerId);
-                        ConsoleHelper.WriteSuccess("Printer deleted.");
+                        var printerDeleted = await printerShare.DeletePrinterAsync(graphToken, printerId);
+                        if (printerDeleted)
+                        {
+                            ConsoleHelper.WriteSuccess("Printer deleted.");
+                        }
+                        else
+                        {
+                            ConsoleHelper.WriteWarning("Printer was already absent.");
+                        }
                     }
                     catch (Exception printerCleanupEx)
                     {

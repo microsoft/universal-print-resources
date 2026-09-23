@@ -107,4 +107,71 @@ public class PrinterSharingTests
         Assert.DoesNotContain("rollback transport failure", exception.Message);
         Assert.Equal(HttpMethod.Delete, handler.Requests[^1].Method);
     }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NoContent, true)]
+    [InlineData(HttpStatusCode.NotFound, false)]
+    public async Task DeleteShareAsync_ReturnsDeletionStatus(
+        HttpStatusCode statusCode,
+        bool expectedDeleted)
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(statusCode));
+        using var client = new PrinterSharing("https://graph.example/v1.0", handler);
+
+        var deleted = await client.DeleteShareAsync("access-token", "share/1");
+
+        Assert.Equal(expectedDeleted, deleted);
+        Assert.Equal(
+            "https://graph.example/v1.0/print/shares/share%2F1",
+            Assert.Single(handler.Requests).Uri);
+    }
+
+    [Fact]
+    public async Task DeleteShareAsync_ThrowsOnFailedCleanup()
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("invalid share")
+            });
+        using var client = new PrinterSharing("https://graph.example/v1.0", handler);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.DeleteShareAsync("access-token", "share-1"));
+
+        Assert.Contains("Failed to delete share", exception.Message);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NoContent, true)]
+    [InlineData(HttpStatusCode.NotFound, false)]
+    public async Task DeletePrinterAsync_ReturnsDeletionStatus(
+        HttpStatusCode statusCode,
+        bool expectedDeleted)
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(statusCode));
+        using var client = new PrinterSharing("https://graph.example/v1.0", handler);
+
+        var deleted = await client.DeletePrinterAsync("access-token", "printer-1");
+
+        Assert.Equal(expectedDeleted, deleted);
+    }
+
+    [Fact]
+    public async Task DeletePrinterAsync_ThrowsOnFailedCleanup()
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) =>
+            new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("invalid printer")
+            });
+        using var client = new PrinterSharing("https://graph.example/v1.0", handler);
+
+        var exception = await Assert.ThrowsAsync<HttpRequestException>(() =>
+            client.DeletePrinterAsync("access-token", "printer-1"));
+
+        Assert.Contains("Failed to delete printer", exception.Message);
+    }
 }

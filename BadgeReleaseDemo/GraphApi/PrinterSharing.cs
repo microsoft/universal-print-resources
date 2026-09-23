@@ -126,37 +126,53 @@ public class PrinterSharing : IDisposable
     }
 
     /// <summary>
-    /// Deletes a printer share.
+    /// Deletes a printer share. Returns false when the share is already absent.
     /// </summary>
-    public async Task DeleteShareAsync(string accessToken, string shareId)
+    public async Task<bool> DeleteShareAsync(string accessToken, string shareId)
     {
         using var request = new HttpRequestMessage(HttpMethod.Delete,
             $"{graphBaseUrl}/print/shares/{Uri.EscapeDataString(shareId)}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
         using var response = await httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
-            var body = await response.Content.ReadAsStringAsync();
-            ConsoleHelper.WriteWarning($"Failed to delete share: {response.StatusCode} - {body}");
+            return false;
         }
+
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Failed to delete share: {response.StatusCode} - {body}");
+        }
+
+        return true;
     }
 
     /// <summary>
-    /// Deletes a printer.
+    /// Deletes a printer. Returns false when the printer is already absent.
     /// </summary>
-    public async Task DeletePrinterAsync(string accessToken, string printerId)
+    public async Task<bool> DeletePrinterAsync(string accessToken, string printerId)
     {
         using var request = new HttpRequestMessage(HttpMethod.Delete,
             $"{graphBaseUrl}/print/printers/{printerId}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
         using var response = await httpClient.SendAsync(request);
-        if (!response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NotFound)
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
-            var body = await response.Content.ReadAsStringAsync();
-            ConsoleHelper.WriteWarning($"Failed to delete printer: {response.StatusCode} - {body}");
+            return false;
         }
+
+        var body = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Failed to delete printer: {response.StatusCode} - {body}");
+        }
+
+        return true;
     }
 
     private static string ReplaceApiVersion(string baseUrl, string apiVersion)
