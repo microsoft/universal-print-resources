@@ -104,22 +104,31 @@ Completely removes a connector and all its associated printers from Universal Pr
 
 **Parameters:**
 - `ConnectorName`: Name of the connector to clean up
+- `LocalCleanupOnly` (optional): Skip all Universal Print operations and only clean up the local machine. No sign-in is needed. Unregister any remaining printers and the connector from the Azure portal.
 
 **⚠️ CRITICAL WARNINGS:**
 - **Actions are NOT recoverable**
 - **Data removed is NOT recoverable**
 - Unshares and unregisters ALL printers
-- Deletes ALL certificates and local data
+- Deletes the connector's certificates and local data
 - Must be run on the same machine as the connector
+
+**Notes:**
+- Can also be run after the connector software has been uninstalled
+- If the connector or a printer no longer exists in Universal Print, that step is skipped and the local cleanup still runs
+- Local print queues are not deleted; only their Universal Print data (the `CloudData` registry key) is removed
+- Universal Print data and certificates that belong to a different connector are kept
+- Stops without making changes if any local print queue can't be read
+- If the Universal Print data of a print queue can't be deleted, the connector registry data is kept so the script can be run again to finish the cleanup
 
 **Process:**
 1. Validates connector name matches local installation
-2. Retrieves and unshares all printer shares
-3. Unregisters all printers from Universal Print
-4. Removes local registration data
+2. Signs in and finds the printers registered through the connector (including printers found through the local print queues), before making any changes
+3. Shows a summary of the changes and asks for confirmation
+4. Unshares and unregisters the printers from Universal Print
 5. Unregisters the connector itself
-6. Deletes certificates and application data
-7. Prompts for manual connector software uninstallation
+6. Removes local registration data, certificates and connector registry data
+7. Prompts for manual connector software uninstallation (if still installed), and deletes its application data once the connector is uninstalled
 
 ## 🚀 Usage Examples
 
@@ -154,6 +163,9 @@ Completely removes a connector and all its associated printers from Universal Pr
 ### Complete Connector Cleanup
 ```powershell
 .\Sample connector cleanup script.ps1 -ConnectorName "MyConnector"
+
+# Clean up only the local machine (without signing in to Universal Print)
+.\Sample connector cleanup script.ps1 -ConnectorName "MyConnector" -LocalCleanupOnly
 ```
 
 ## 📝 Important Notes
