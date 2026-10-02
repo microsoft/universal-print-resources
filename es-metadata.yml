@@ -1,0 +1,11 @@
+schemaVersion: 1.0.0
+providers:
+- provider: InventoryAsCode
+  version: 1.0.0
+  metadata:
+    isProduction: false
+    includeSubfolders: true
+    accountableOwners:
+      service: bdf31425-9465-476b-8767-c5b6246d51bd
+    routing:
+      gitHubIssue: {}
