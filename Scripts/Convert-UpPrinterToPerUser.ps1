@@ -161,6 +161,23 @@ if (-not $WhatIfMode) {
 
 # --- Private staging (Windows PowerShell 5.1 and PowerShell 7 on Windows) ------
 
+function Open-PinnedConversionDirectory {
+    param ([Parameter(Mandatory = $true)][string]$Path)
+
+    # FILE_LIST_DIRECTORY is essential: metadata-only access does not participate
+    # in read/write/delete share checks, so omitting FILE_SHARE_DELETE is not enough.
+    # READ_CONTROL | READ_ATTRIBUTES | LIST_DIRECTORY; share read/write, not delete;
+    # OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
+    $handle = [UPConvert.StagingNative]::CreateFileW($Path, 0x20081, 3, [IntPtr]::Zero,
+                                                   3, 0x02200000, [IntPtr]::Zero)
+    if ($handle.IsInvalid) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $handle.Dispose()
+        throw [ComponentModel.Win32Exception]::new($errorCode, "Cannot pin backup ancestor: $Path")
+    }
+    return $handle
+}
+
 function New-PrivateConversionDirectory {
     param ([Parameter(Mandatory = $true)][string]$ParentPath)
 
@@ -255,15 +272,7 @@ function New-PrivateConversionDirectory {
                 }
             }
 
-            # READ_CONTROL | READ_ATTRIBUTES; share read/write, never delete;
-            # OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
-            $handle = [UPConvert.StagingNative]::CreateFileW($path, 0x20080, 3, [IntPtr]::Zero,
-                                                           3, 0x02200000, [IntPtr]::Zero)
-            if ($handle.IsInvalid) {
-                $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-                $handle.Dispose()
-                throw [ComponentModel.Win32Exception]::new($errorCode, "Cannot pin backup ancestor: $path")
-            }
+            $handle = Open-PinnedConversionDirectory -Path $path
             $handles.Add($handle)
             if (-not [UPConvert.StagingNative]::GetFileInformationByHandleEx($handle, 9, $info, 8)) {
                 throw [ComponentModel.Win32Exception]::new(

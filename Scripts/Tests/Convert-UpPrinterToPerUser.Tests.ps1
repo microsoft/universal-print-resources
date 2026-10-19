@@ -6,13 +6,18 @@ Optional isolated filesystem/ACL checks (run this test script as SYSTEM):
   & .\Scripts\Tests\Convert-UpPrinterToPerUser.Tests.ps1 -FileSystemChecks
 Functions are loaded individually; the entry point is exercised only in WhatIf.
 All registry/hive commands are mocked; no printers, registry keys, or services
-are changed. Filesystem checks create and remove only their private fixtures
-under SYSTEM's local AppData. No Pester dependency is required.
+are changed. Default sharing checks use disposable fixtures beside this test.
+SYSTEM-only checks use private fixtures under SYSTEM's local AppData.
+Cleanup is non-recursive and handles unexpected successful renames.
+No Pester dependency is required.
 #>
 [CmdletBinding()]
 param ([switch]$FileSystemChecks)
 
 $ErrorActionPreference = 'Stop'
+Write-Host ("Runtime: PowerShell {0} ({1}), {2}-bit; identity: {3}" -f
+    $PSVersionTable.PSVersion, $PSVersionTable.PSEdition, ([IntPtr]::Size * 8),
+    [Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
 
 function Assert-True {
     param ([bool]$Condition, [string]$Message)
@@ -31,12 +36,72 @@ function Assert-Throws {
     Assert-True $threw $Message
 }
 
+function Assert-SharingViolation {
+    param ([scriptblock]$Action, [string]$Message)
+    $blocked = $false
+    try { & $Action } catch {
+        $exception = $_.Exception.GetBaseException()
+        $code = if ($exception -is [ComponentModel.Win32Exception]) {
+            $exception.NativeErrorCode
+        } else {
+            $exception.HResult -band 0xffff
+        }
+        Assert-True ($code -eq 32) "$Message (expected sharing violation, got $exception)"
+        $blocked = $true
+    }
+    Assert-True $blocked $Message
+}
+
+function Remove-TestFixture {
+    param (
+        [string[]]$Roots,
+        [string]$Marker,
+        [string[]]$Files = @(),
+        [string[]]$Directories = @(),
+        [string[]]$Links = @()
+    )
+    foreach ($root in $Roots) {
+        if (-not [IO.Directory]::Exists($root)) { continue }
+        Assert-True (([IO.File]::GetAttributes($root) -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+            "Refusing cleanup through a reparse-point fixture root: $root"
+        $markerPath = Join-Path $root '.upconvert-test-fixture'
+        Assert-True ([IO.File]::Exists($markerPath) -and [IO.File]::ReadAllText($markerPath) -eq $Marker) `
+            "Refusing cleanup of an unrecognized fixture: $root"
+        foreach ($relative in $Directories) {
+            $path = Join-Path $root $relative
+            if ([IO.Directory]::Exists($path)) {
+                Assert-True (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -eq 0) `
+                    "Refusing cleanup through an unexpected reparse point: $path"
+            }
+        }
+        foreach ($relative in $Links) {
+            $path = Join-Path $root $relative
+            if ([IO.Directory]::Exists($path)) { [IO.Directory]::Delete($path) }
+        }
+        foreach ($relative in $Files) {
+            $path = Join-Path $root $relative
+            if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+        }
+        foreach ($relative in ($Directories | Sort-Object Length -Descending)) {
+            $path = Join-Path $root $relative
+            if ([IO.Directory]::Exists($path)) { [IO.Directory]::Delete($path) }
+        }
+        # Unknown contents cause cleanup to fail rather than being removed.
+        $remaining = [IO.Directory]::GetFileSystemEntries($root)
+        Assert-True ($remaining.Count -eq 1 -and $remaining[0] -eq $markerPath) `
+            "Unexpected fixture contents left intact for inspection: $root"
+        [IO.File]::Delete($markerPath)
+        [IO.Directory]::Delete($root)
+    }
+}
+
 $source = Join-Path (Split-Path $PSScriptRoot -Parent) 'Convert-UpPrinterToPerUser.ps1'
 $tokens = $null
 $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$parseErrors)
 Assert-True ($parseErrors.Count -eq 0) "Script parses: $($parseErrors -join '; ')"
-foreach ($name in @('New-PrivateConversionDirectory', 'Read-DafExport', 'Convert-OnePrinter')) {
+foreach ($name in @('Open-PinnedConversionDirectory', 'New-PrivateConversionDirectory',
+                     'Read-DafExport', 'Convert-OnePrinter')) {
     $definition = $ast.Find({
         param ($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -92,6 +157,79 @@ foreach ($name in @('CreateFileW', 'CreateDirectoryW', 'GetFileInformationByHand
     Assert-True $import.SetLastError "Native method preserves error codes: $name"
 }
 
+$sharingRoot = Join-Path $PSScriptRoot ("UPConvert-Test-$([Guid]::NewGuid().ToString('N'))")
+if (-not [UPConvert.StagingNative]::CreateDirectoryW($sharingRoot, [IntPtr]::Zero)) {
+    throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error())
+}
+$marker = [Guid]::NewGuid().ToString('N')
+$handles = [Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+try {
+    [IO.File]::WriteAllText((Join-Path $sharingRoot '.upconvert-test-fixture'), $marker)
+    $metadataPath = Join-Path $sharingRoot 'metadata'
+    $null = [IO.Directory]::CreateDirectory($metadataPath)
+    $metadata = [UPConvert.StagingNative]::CreateFileW($metadataPath, 0x20080, 3, [IntPtr]::Zero,
+                                                     3, 0x02200000, [IntPtr]::Zero)
+    $handles.Add($metadata)
+    Assert-True (-not $metadata.IsInvalid) 'Metadata-only control handle opens.'
+    [IO.Directory]::Move($metadataPath, "$metadataPath-moved")
+    Assert-True ([IO.Directory]::Exists("$metadataPath-moved")) `
+        'Control reproduces the original bug: metadata-only handles do not pin directories.'
+    $metadata.Dispose()
+
+    $lockedPath = Join-Path $sharingRoot 'locked'
+    $null = [IO.Directory]::CreateDirectory($lockedPath)
+    $pin = Open-PinnedConversionDirectory -Path $lockedPath
+    $handles.Add($pin)
+    [gc]::Collect(); [gc]::WaitForPendingFinalizers()
+    Assert-True (-not $pin.IsClosed) 'The returned pin remains open after garbage collection.'
+    Assert-SharingViolation { [IO.Directory]::Move($lockedPath, "$lockedPath-moved") } `
+        'Production pin blocks rename even when the caller can delete the directory.'
+    $deleteHandle = [UPConvert.StagingNative]::CreateFileW($lockedPath, 0x10000, 7, [IntPtr]::Zero,
+                                                         3, 0x02200000, [IntPtr]::Zero)
+    $deleteError = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $handles.Add($deleteHandle)
+    Assert-True ($deleteHandle.IsInvalid -and $deleteError -eq 32) 'Production pin blocks new DELETE handles.'
+    $pin.Dispose()
+    $deleteHandle = [UPConvert.StagingNative]::CreateFileW($lockedPath, 0x10000, 7, [IntPtr]::Zero,
+                                                         3, 0x02200000, [IntPtr]::Zero)
+    $handles.Add($deleteHandle)
+    Assert-True (-not $deleteHandle.IsInvalid) 'DELETE access is available after the pin is released.'
+    Assert-SharingViolation {
+        $unexpected = Open-PinnedConversionDirectory -Path $lockedPath
+        $unexpected.Dispose()
+    } `
+        'Production pin fails closed when a DELETE handle already exists.'
+    $deleteHandle.Dispose()
+    [IO.Directory]::Move($lockedPath, "$lockedPath-moved")
+    Assert-True ([IO.Directory]::Exists("$lockedPath-moved")) 'Releasing the pin permits rename.'
+
+    $ancestorPath = Join-Path $sharingRoot 'ancestor'
+    $childPath = Join-Path $ancestorPath 'child'
+    $null = [IO.Directory]::CreateDirectory($childPath)
+    $ancestorPin = Open-PinnedConversionDirectory -Path $ancestorPath
+    $handles.Add($ancestorPin)
+    $childPin = Open-PinnedConversionDirectory -Path $childPath
+    $handles.Add($childPin)
+    Assert-SharingViolation { [IO.Directory]::Move($childPath, "$childPath-moved") } `
+        'Pinned child cannot be renamed independently.'
+    Assert-SharingViolation { [IO.Directory]::Move($ancestorPath, "$ancestorPath-moved") } `
+        'Pinned ancestor cannot redirect child paths.'
+    $childPin.Dispose()
+    $ancestorPin.Dispose()
+    # Exercise the residue shape from an unexpected child AND parent rename.
+    [IO.Directory]::Move($sharingRoot, "$sharingRoot-moved")
+}
+finally {
+    foreach ($handle in $handles) { $handle.Dispose() }
+    Remove-TestFixture -Roots @($sharingRoot, "$sharingRoot-moved") -Marker $marker `
+        -Directories @('metadata', 'metadata-moved', 'locked', 'locked-moved',
+            'ancestor\child', 'ancestor\child-moved', 'ancestor',
+            'ancestor-moved\child', 'ancestor-moved\child-moved', 'ancestor-moved')
+}
+Assert-True (-not [IO.Directory]::Exists($sharingRoot) -and -not [IO.Directory]::Exists("$sharingRoot-moved")) `
+    'Cleanup handles the deliberately moved control and released-pin directories.'
+Write-Host 'PASS: metadata-only failure reproduction, production pin sharing checks, and moved-fixture cleanup.'
+
 $profile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
 $profileAcl = Get-Acl -LiteralPath $profile
 $profileOwner = $profileAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
@@ -113,7 +251,7 @@ if ($profileOwner -notin $trusted -or $untrustedWriters.Count -gt 0) {
 }
 
 if (-not $FileSystemChecks) {
-    Write-Host 'PASS: parsing, read-only dry run, native declaration emission, and invalid path rejection. Filesystem/ACL checks not requested.'
+    Write-Host 'PASS: parsing, read-only dry run, native declarations, sharing checks, and invalid path rejection. SYSTEM-only checks not requested.'
     return
 }
 
@@ -130,10 +268,14 @@ function Close-Staging {
 $fixture = $null
 $run = $null
 $junction = $null
+$runLeaf = $null
+$fixtureMarker = [Guid]::NewGuid().ToString('N')
 try {
     $fixture = New-PrivateConversionDirectory -ParentPath (
         [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData))
+    [IO.File]::WriteAllText((Join-Path $fixture.Path '.upconvert-test-fixture'), $fixtureMarker)
     $run = New-PrivateConversionDirectory -ParentPath $fixture.Path
+    $runLeaf = [IO.Path]::GetFileName($run.Path)
     $acl = Get-Acl -LiteralPath $run.Path
     Assert-True $acl.AreAccessRulesProtected 'Run directory disables ACL inheritance.'
     Assert-True ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-18') `
@@ -146,9 +288,9 @@ try {
         Assert-True ($rule.FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl) `
             'Trusted identities retain full control.'
     }
-    Assert-Throws { [IO.Directory]::Move($run.Path, "$($run.Path)-moved") } `
+    Assert-SharingViolation { [IO.Directory]::Move($run.Path, "$($run.Path)-moved") } `
         'Open staging handle prevents directory replacement.'
-    Assert-Throws { [IO.Directory]::Move($fixture.Path, "$($fixture.Path)-moved") } `
+    Assert-SharingViolation { [IO.Directory]::Move($fixture.Path, "$($fixture.Path)-moved") } `
         'Open ancestor handles prevent parent replacement.'
     $unsafe = Join-Path $fixture.Path 'unsafe'
     $null = [IO.Directory]::CreateDirectory($unsafe)
@@ -203,6 +345,16 @@ Windows Registry Editor Version 5.00
         'Mocked export/parse/generate/import flow succeeds.'
     Assert-True ([IO.File]::Exists($result.Backup)) 'Useful per-system backup remains.'
     Assert-True ([IO.File]::Exists($result.Installs[0].RegFile)) 'Generated payload remains.'
+    foreach ($file in @($result.Backup, $result.Installs[0].RegFile)) {
+        $fileAcl = Get-Acl -LiteralPath $file
+        $fileRules = @($fileAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+        Assert-True ($fileRules.Count -eq 2) 'Intermediate file inherits only two grants.'
+        foreach ($rule in $fileRules) {
+            Assert-True ($rule.IsInherited -and $rule.IdentityReference.Value -in @('S-1-5-18', 'S-1-5-32-544') -and
+                $rule.FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl) `
+                'Export and import files inherit SYSTEM/Administrators-only access.'
+        }
+    }
     Assert-Throws {
         Convert-OnePrinter -ShareId $share -TenantId $tenant -TargetSIDs @($sid) `
             -Timestamp 'first' -BackupDir $run.Path -SkipDisassociate
@@ -220,10 +372,19 @@ Windows Registry Editor Version 5.00
 finally {
     Close-Staging $run
     Close-Staging $fixture
-    if ($null -ne $junction -and [IO.Directory]::Exists($junction)) {
-        [IO.Directory]::Delete($junction)
-    }
     if ($null -ne $fixture) {
-        Remove-Item -LiteralPath $fixture.Path -Recurse -Force
+        $directories = @('unsafe\inherited', 'unsafe', 'unsafe-moved\inherited', 'unsafe-moved')
+        $files = @()
+        if ($runLeaf) {
+            foreach ($leaf in @($runLeaf, "$runLeaf-moved")) {
+                $directories += $leaf
+                foreach ($stamp in @('first', 'second')) {
+                    $files += "$leaf\PerSystem-MCP-$share-$stamp.reg"
+                    $files += "$leaf\PerUser-$sid-MCP-$share-$stamp.reg"
+                }
+            }
+        }
+        Remove-TestFixture -Roots @($fixture.Path, "$($fixture.Path)-moved") -Marker $fixtureMarker `
+            -Files $files -Directories $directories -Links @('junction')
     }
 }
