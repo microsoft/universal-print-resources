@@ -205,7 +205,10 @@ Assert-True ($script:RegCalls.Count -eq 2) 'Invalid SID never reaches conversion
     }, $true).Extent.Text
     $flowRoot = Join-Path $PSScriptRoot ("UPConvert-Flow-$([Guid]::NewGuid().ToString('N'))")
     $null = [IO.Directory]::CreateDirectory($flowRoot)
+    $flowMarker = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText((Join-Path $flowRoot '.upconvert-test-fixture'), $flowMarker)
     $flowFiles = [Collections.Generic.List[string]]::new()
+    $flowError = $null
     try {
         foreach ($preference in @('Continue', 'Stop')) {
             foreach ($failure in @('collision', 'open', 'write', 'duplicate', 'duplicate-skip', 'duplicate-whatif')) {
@@ -303,11 +306,21 @@ $result = Convert-OnePrinter -ShareId $share -TenantId $tenant -TargetSIDs $targ
             }
         }
     }
+    catch {
+        $flowError = $_
+        throw
+    }
     finally {
-        foreach ($file in $flowFiles) {
-            if ([IO.File]::Exists($file)) { [IO.File]::Delete($file) }
+        try {
+            $relativeFiles = @($flowFiles | ForEach-Object { [IO.Path]::GetFileName($_) })
+            Remove-TestFixture -Roots @($flowRoot) -Marker $flowMarker -Files $relativeFiles
         }
-        [IO.Directory]::Delete($flowRoot)
+        catch {
+            if ($null -eq $flowError) { throw }
+            Write-Warning -WarningAction Continue (
+                "Flow assertions failed: {0} Cleanup also failed; inspect '{1}': {2}" -f
+                $flowError.Exception.Message, $flowRoot, $_.Exception.Message)
+        }
     }
 }
 Write-Host 'PASS: production collision/open/write/duplicate control flow under Continue and Stop callers.'
