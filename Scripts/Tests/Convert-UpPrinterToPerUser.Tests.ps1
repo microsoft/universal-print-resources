@@ -148,7 +148,7 @@ finally {
 Write-Host 'PASS: explicit empty-parent diagnostics and GC handle cleanup on allocation failure.'
 
 foreach ($name in @('Open-PinnedConversionDirectory', 'New-PrivateConversionDirectory',
-                     'Read-DafExport', 'Convert-OnePrinter')) {
+                     'Read-DafExport', 'Write-ConversionRegFile', 'Convert-OnePrinter')) {
     $definition = $ast.Find({
         param ($node)
         $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -190,6 +190,103 @@ Assert-Throws {
         -BackupDir $untouchedPath -WhatIfMode -SkipDisassociate
 } 'Invalid SID path fragments are rejected before conversion.' 'Invalid real-user SID'
 Assert-True ($script:RegCalls.Count -eq 2) 'Invalid SID never reaches conversion.'
+
+# Keep assertions strict, but invoke the production function with each caller's
+# actual preference. Only registry/hive/payload-building operations are mocked.
+& {
+    $writeDefinition = $ast.Find({
+        param ($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Write-ConversionRegFile'
+    }, $true).Extent.Text
+    $convertDefinition = $ast.Find({
+        param ($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Convert-OnePrinter'
+    }, $true).Extent.Text
+    $flowRoot = Join-Path $PSScriptRoot ("UPConvert-Flow-$([Guid]::NewGuid().ToString('N'))")
+    $null = [IO.Directory]::CreateDirectory($flowRoot)
+    $flowFiles = [Collections.Generic.List[string]]::new()
+    try {
+        foreach ($preference in @('Continue', 'Stop')) {
+            foreach ($failure in @('collision', 'open', 'write', 'duplicate')) {
+                . ([scriptblock]::Create($writeDefinition))
+                if ($failure -eq 'open') {
+                    . ([scriptblock]::Create($writeDefinition.Replace(
+                        '[IO.FileStream]::new($Path,', '[IO.FileStream]::new(($Path + "\missing"),')))
+                } elseif ($failure -eq 'write') {
+                    . ([scriptblock]::Create($writeDefinition.Replace(
+                        '$writer.Write($Content)', '$writer.Write("partial"); throw "Injected writer failure"')))
+                }
+                $stamp = "$preference-$failure"
+                $payload = Join-Path $flowRoot "PerUser-$sid-MCP-$share-$stamp.reg"
+                $flowFiles.Add($payload)
+                if ($failure -eq 'collision') { [IO.File]::WriteAllText($payload, 'sentinel') }
+                $targets = if ($failure -eq 'duplicate') {
+                    @($sid, $sid, 'S-1-5-21-100-200-300-1002')
+                } else { @($sid) }
+                $state = @{ Queries = 0; Imports = 0 }
+                # A separate runspace avoids the harness's outer try/catch
+                # changing how statement-terminating errors propagate.
+                $runner = [powershell]::Create()
+                try {
+                    $body = @'
+param ($preference, $state, $share, $tenant, $targets, $stamp, $flowRoot)
+$ErrorActionPreference = $preference
+function Test-HiveLoaded { return $true }
+function Build-PerUserRegContent { return 'generated payload' }
+function Read-DafExport { return @{ Property = 'mocked property' } }
+function reg {
+    switch ($args[0]) {
+        'query' { $state.Queries++ }
+        'export' { }
+        'import' { $state.Imports++ }
+        default { throw "Unexpected command: $args" }
+    }
+    $script:LASTEXITCODE = 0
+}
+'@
+                    $writeBody = (Get-Command Write-ConversionRegFile).Definition
+                    $body += "`r`nfunction Write-ConversionRegFile {`r`n$writeBody`r`n}`r`n" + $convertDefinition + @'
+
+$REG_PERSYS_BASE = 'mocked-store'
+$result = Convert-OnePrinter -ShareId $share -TenantId $tenant -TargetSIDs $targets -Timestamp $stamp -BackupDir $flowRoot -SkipDisassociate
+'returned-from-conversion'
+'@
+                    $null = $runner.AddScript($body).AddArgument($preference).AddArgument($state).
+                        AddArgument($share).AddArgument($tenant).AddArgument($targets).
+                        AddArgument($stamp).AddArgument($flowRoot)
+                    $output = @()
+                    $invocationError = $null
+                    try { $output = $runner.Invoke() } catch { $invocationError = $_ }
+                    $errors = @($runner.Streams.Error)
+                    if ($errors.Count -eq 0 -and $null -ne $invocationError) {
+                        $errors = @($invocationError)
+                    }
+                }
+                finally { $runner.Dispose() }
+                Assert-True ($output -notcontains 'returned-from-conversion' -and $errors.Count -gt 0) `
+                    "$preference/$failure fails closed without an enclosing catch."
+                Assert-True ($errors[-1].Exception.Message -like '*Cannot write conversion payload*') `
+                    "$preference/$failure surfaces the payload error explicitly."
+                $expectedImports = if ($failure -eq 'duplicate') { 1 } else { 0 }
+                Assert-True ($state.Imports -eq $expectedImports) "$preference/$failure never imports stale/partial bytes."
+                Assert-True ($state.Queries -eq 1) "$preference/$failure queries once per printer, not per SID."
+                if ($failure -eq 'collision') {
+                    Assert-True ([IO.File]::ReadAllText($payload) -eq 'sentinel') 'Existing payload is unchanged.'
+                }
+                $laterPayload = Join-Path $flowRoot "PerUser-S-1-5-21-100-200-300-1002-MCP-$share-$stamp.reg"
+                Assert-True (-not [IO.File]::Exists($laterPayload)) 'Failure terminates before a later user.'
+            }
+        }
+    }
+    finally {
+        foreach ($file in $flowFiles) {
+            if ([IO.File]::Exists($file)) { [IO.File]::Delete($file) }
+        }
+        [IO.Directory]::Delete($flowRoot)
+    }
+}
+Write-Host 'PASS: production collision/open/write/duplicate control flow under Continue and Stop callers.'
 
 Assert-Throws { New-PrivateConversionDirectory -ParentPath '\\localhost\C$\Windows' } `
     'UNC paths are rejected after successfully emitting native declarations.' 'absolute local drive path'

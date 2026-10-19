@@ -188,6 +188,7 @@ function Open-PinnedConversionDirectory {
 function New-PrivateConversionDirectory {
     param ([Parameter(Mandatory = $true)][string]$ParentPath)
 
+    $ErrorActionPreference = 'Stop'
     # Emit only P/Invoke declarations in memory: Add-Type can use the very TEMP
     # directory we must not trust when compiling under Windows PowerShell.
     if (-not ('UPConvert.StagingNative' -as [type])) {
@@ -693,6 +694,23 @@ function Build-PerUserRegContent {
 
 # --- Main ---------------------------------------------------------------------
 
+function Write-ConversionRegFile {
+    param ([string]$Path, [string]$Content)
+
+    $ErrorActionPreference = 'Stop'
+    $stream = [IO.FileStream]::new($Path, [IO.FileMode]::CreateNew,
+                                 [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    try {
+        $writer = [IO.StreamWriter]::new($stream, [Text.UnicodeEncoding]::new($false, $true))
+        try {
+            $writer.NewLine = "`r`n"
+            $writer.Write($Content)
+        }
+        finally { $writer.Dispose() }
+    }
+    finally { $stream.Dispose() }
+}
+
 function Convert-OnePrinter {
     param (
         [Parameter(Mandatory = $true)][string]$ShareId,
@@ -802,17 +820,12 @@ function Convert-OnePrinter {
                 -PerSystem $perSystem
 
             $regFile = Join-Path $BackupDir "PerUser-$sid-MCP-$ShareId-$Timestamp.reg"
-            $stream = [IO.FileStream]::new($regFile, [IO.FileMode]::CreateNew,
-                                         [IO.FileAccess]::Write, [IO.FileShare]::Read)
             try {
-                $writer = [IO.StreamWriter]::new($stream, [Text.UnicodeEncoding]::new($false, $true))
-                try {
-                    $writer.NewLine = "`r`n"
-                    $writer.Write($regContent)
-                }
-                finally { $writer.Dispose() }
+                Write-ConversionRegFile -Path $regFile -Content $regContent
             }
-            finally { $stream.Dispose() }
+            catch {
+                throw "Cannot write conversion payload '$regFile'; no import attempted for this user. $($_.Exception.Message)"
+            }
             Write-Host "    Generated: $regFile" -ForegroundColor DarkGray
             Write-Host "    Instance GUID: $instanceGuid"
 
