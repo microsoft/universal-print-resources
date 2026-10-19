@@ -100,6 +100,53 @@ $tokens = $null
 $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$parseErrors)
 Assert-True ($parseErrors.Count -eq 0) "Script parses: $($parseErrors -join '; ')"
+
+$parentValidation = $ast.Find({
+    param ($node)
+    $node -is [Management.Automation.Language.IfStatementAst] -and
+        $node.Extent.Text.StartsWith('if (-not $WhatIfMode -and [string]::IsNullOrWhiteSpace($BackupDir))')
+}, $true)
+Assert-True ($null -ne $parentValidation) 'Explicit backup parent validation exists.'
+$parentCheck = [scriptblock]::Create(@'
+param ([string]$BackupDir = '', [switch]$WhatIfMode)
+'@ + "`r`n" + $parentValidation.Extent.Text)
+Assert-Throws { & $parentCheck } 'Unresolved default has an actionable error.' `
+    "SYSTEM's LocalApplicationData backup parent could not be resolved.*-BackupDir"
+foreach ($empty in @('', '   ')) {
+    Assert-Throws { & $parentCheck -BackupDir $empty } 'Supplied empty parent is not blamed on AppData.' `
+        'BackupDir cannot be empty or whitespace.*-BackupDir'
+}
+& $parentCheck -WhatIfMode
+& $parentCheck -BackupDir '' -WhatIfMode
+& $parentCheck -BackupDir 'C:\ExistingTrustedParent'
+
+# Execute the production allocation try/finally with a synthetic allocation
+# failure. No OOM, native directory creation, or privileged token is needed.
+$allocationTry = $ast.Find({
+    param ($node)
+    $node -is [Management.Automation.Language.TryStatementAst] -and
+        $node.Body.Statements.Count -gt 0 -and
+        $node.Body.Statements[0].Extent.Text -eq
+            '$attributes = [Runtime.InteropServices.Marshal]::AllocHGlobal(3 * [IntPtr]::Size)'
+}, $true)
+Assert-True ($null -ne $allocationTry) 'Native allocation occurs inside the cleanup try.'
+$allocationFailure = $allocationTry.Extent.Text.Replace(
+    $allocationTry.Body.Statements[0].Extent.Text, "throw 'Injected native allocation failure'")
+$attributes = [IntPtr]::Zero
+$pinned = [Runtime.InteropServices.GCHandle]::Alloc([byte[]]@(1, 2), 'Pinned')
+$allocationThrew = $false
+try {
+    try { . ([scriptblock]::Create($allocationFailure)) } catch {
+        Assert-True ($_.Exception.Message -eq 'Injected native allocation failure') 'Expected injected failure.'
+        $allocationThrew = $true
+    }
+    Assert-True ($allocationThrew -and -not $pinned.IsAllocated) 'Allocation failure always frees the GC handle.'
+}
+finally {
+    if ($pinned.IsAllocated) { $pinned.Free() }
+}
+Write-Host 'PASS: explicit empty-parent diagnostics and GC handle cleanup on allocation failure.'
+
 foreach ($name in @('Open-PinnedConversionDirectory', 'New-PrivateConversionDirectory',
                      'Read-DafExport', 'Convert-OnePrinter')) {
     $definition = $ast.Find({

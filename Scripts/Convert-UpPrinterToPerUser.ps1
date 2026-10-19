@@ -150,6 +150,13 @@ if ($TenantId -notmatch $guidRegex) {
     exit 1
 }
 
+if (-not $WhatIfMode -and [string]::IsNullOrWhiteSpace($BackupDir)) {
+    if ($PSBoundParameters.ContainsKey('BackupDir')) {
+        throw 'BackupDir cannot be empty or whitespace. Specify an existing trusted local directory with -BackupDir.'
+    }
+    throw "SYSTEM's LocalApplicationData backup parent could not be resolved. Specify an existing trusted local directory with -BackupDir."
+}
+
 if (-not $WhatIfMode) {
     $whoami = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     if ($whoami -ne 'NT AUTHORITY\SYSTEM') {
@@ -255,9 +262,10 @@ function New-PrivateConversionDirectory {
                 $security = [Security.AccessControl.DirectorySecurity]::new()
                 $security.SetSecurityDescriptorSddlForm('O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
                 $descriptor = $security.GetSecurityDescriptorBinaryForm()
+                $attributes = [IntPtr]::Zero
                 $pinned = [Runtime.InteropServices.GCHandle]::Alloc($descriptor, 'Pinned')
-                $attributes = [Runtime.InteropServices.Marshal]::AllocHGlobal(3 * [IntPtr]::Size)
                 try {
+                    $attributes = [Runtime.InteropServices.Marshal]::AllocHGlobal(3 * [IntPtr]::Size)
                     [Runtime.InteropServices.Marshal]::WriteInt32($attributes, 0, 3 * [IntPtr]::Size)
                     [Runtime.InteropServices.Marshal]::WriteIntPtr($attributes, [IntPtr]::Size, $pinned.AddrOfPinnedObject())
                     [Runtime.InteropServices.Marshal]::WriteInt32($attributes, 2 * [IntPtr]::Size, 0)
@@ -267,7 +275,9 @@ function New-PrivateConversionDirectory {
                     }
                 }
                 finally {
-                    [Runtime.InteropServices.Marshal]::FreeHGlobal($attributes)
+                    if ($attributes -ne [IntPtr]::Zero) {
+                        [Runtime.InteropServices.Marshal]::FreeHGlobal($attributes)
+                    }
                     $pinned.Free()
                 }
             }
