@@ -14,6 +14,18 @@
 #     4. For each real user on the box (loading logged-off hives as needed), writes per-user DAF
 #        entries with a freshly-generated instance GUID for each install.
 #     5. Restarts DeviceAssociationService and Spooler (once, after all printers are processed).
+#
+# Backups and import files stay in a newly-created SYSTEM/Administrators-only
+# UPConvert-<GUID> directory beneath -BackupDir (default: SYSTEM's local AppData).
+# The parent must already exist on a local fixed drive. Reparse points and
+# ancestors that unprivileged users can modify or use to replace children are
+# rejected; ancestor handles remain open throughout conversion. Do not relax
+# the run directory's ACLs or import backups from an untrusted location.
+# -WhatIfMode does not create files, load hives, or change printer state.
+# Repeated target-user SIDs are skipped with a message after their first attempt
+# for each printer, including when that first attempt found no available hive.
+# Editing this signed sample invalidates its original Authenticode signature;
+# review and re-sign the modified script before deployment where required.
 
 [CmdletBinding(DefaultParameterSetName = 'ConvertOne')]
 param (
@@ -39,9 +51,9 @@ param (
     [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Only target these user SIDs. Omit to target all real users with profiles.")]
     [string[]]$UserSIDs,
 
-    [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Directory for backup .reg files. Defaults to %TEMP%\UPConvert.")]
-    [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Directory for backup .reg files. Defaults to %TEMP%\UPConvert.")]
-    [string]$BackupDir = "$env:TEMP\UPConvert",
+    [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Existing local backup parent. A private UPConvert-<GUID> directory is created beneath it. Defaults to SYSTEM's local AppData.")]
+    [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Existing local backup parent. A private UPConvert-<GUID> directory is created beneath it. Defaults to SYSTEM's local AppData.")]
+    [string]$BackupDir = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData),
 
     [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Dry run. Read state, plan changes, and print what WOULD be done. Make no changes.")]
     [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Dry run. Read state, plan changes, and print what WOULD be done. Make no changes.")]
@@ -140,6 +152,13 @@ if ($TenantId -notmatch $guidRegex) {
     exit 1
 }
 
+if (-not $WhatIfMode -and [string]::IsNullOrWhiteSpace($BackupDir)) {
+    if ($PSBoundParameters.ContainsKey('BackupDir')) {
+        throw 'BackupDir cannot be empty or whitespace. Specify an existing trusted local directory with -BackupDir.'
+    }
+    throw "SYSTEM's LocalApplicationData backup parent could not be resolved. Specify an existing trusted local directory with -BackupDir."
+}
+
 if (-not $WhatIfMode) {
     $whoami = [Security.Principal.WindowsIdentity]::GetCurrent().Name
     if ($whoami -ne 'NT AUTHORITY\SYSTEM') {
@@ -149,8 +168,180 @@ if (-not $WhatIfMode) {
     }
 }
 
-if (-not (Test-Path $BackupDir)) {
-    New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+# --- Private staging (Windows PowerShell 5.1 and PowerShell 7 on Windows) ------
+
+function Open-PinnedConversionDirectory {
+    param ([Parameter(Mandatory = $true)][string]$Path)
+
+    # FILE_LIST_DIRECTORY is essential: metadata-only access does not participate
+    # in read/write/delete share checks, so omitting FILE_SHARE_DELETE is not enough.
+    # READ_CONTROL | READ_ATTRIBUTES | LIST_DIRECTORY; share read/write, not delete;
+    # OPEN_EXISTING, BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
+    $handle = [UPConvert.StagingNative]::CreateFileW($Path, 0x20081, 3, [IntPtr]::Zero,
+                                                   3, 0x02200000, [IntPtr]::Zero)
+    if ($handle.IsInvalid) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        $handle.Dispose()
+        throw [ComponentModel.Win32Exception]::new($errorCode, "Cannot pin backup ancestor: $Path")
+    }
+    return $handle
+}
+
+function New-PrivateConversionDirectory {
+    param ([Parameter(Mandatory = $true)][string]$ParentPath)
+
+    $ErrorActionPreference = 'Stop'
+    # Emit only P/Invoke declarations in memory: Add-Type can use the very TEMP
+    # directory we must not trust when compiling under Windows PowerShell.
+    if (-not ('UPConvert.StagingNative' -as [type])) {
+        $assemblyName = [Reflection.AssemblyName]::new('UPConvert.StagingNative')
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            $assembly = [AppDomain]::CurrentDomain.DefineDynamicAssembly($assemblyName, 'Run')
+        } else {
+            $assembly = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly($assemblyName, 'Run')
+        }
+        $module = $assembly.DefineDynamicModule('Native')
+        $type = $module.DefineType('UPConvert.StagingNative', 'Public, Abstract, Sealed')
+        $dllImport = [Runtime.InteropServices.DllImportAttribute]
+        $constructor = $dllImport.GetConstructor([type[]]@([string]))
+        $fields = [Reflection.FieldInfo[]]@($dllImport.GetField('SetLastError'), $dllImport.GetField('CharSet'))
+        $signatures = @(
+            @{ Name = 'CreateFileW'; Library = 'kernel32.dll'; Return = [Microsoft.Win32.SafeHandles.SafeFileHandle]
+               Parameters = [type[]]@([string], [uint32], [uint32], [IntPtr], [uint32], [uint32], [IntPtr]) },
+            @{ Name = 'CreateDirectoryW'; Library = 'kernel32.dll'; Return = [bool]
+               Parameters = [type[]]@([string], [IntPtr]) },
+            @{ Name = 'GetFileInformationByHandleEx'; Library = 'kernel32.dll'; Return = [bool]
+               Parameters = [type[]]@([Microsoft.Win32.SafeHandles.SafeFileHandle], [int], [IntPtr], [uint32]) },
+            @{ Name = 'GetSecurityInfo'; Library = 'advapi32.dll'; Return = [uint32]
+               Parameters = [type[]]@([Microsoft.Win32.SafeHandles.SafeFileHandle], [uint32], [uint32],
+                   [IntPtr], [IntPtr], [IntPtr], [IntPtr], [IntPtr].MakeByRefType()) },
+            @{ Name = 'GetSecurityDescriptorLength'; Library = 'advapi32.dll'; Return = [uint32]
+               Parameters = [type[]]@([IntPtr]) },
+            @{ Name = 'LocalFree'; Library = 'kernel32.dll'; Return = [IntPtr]
+               Parameters = [type[]]@([IntPtr]) }
+        )
+        foreach ($signature in $signatures) {
+            $method = $type.DefineMethod($signature.Name, 'Public, Static, PinvokeImpl',
+                                         $signature.Return, $signature.Parameters)
+            $attribute = [Reflection.Emit.CustomAttributeBuilder]::new(
+                $constructor, [object[]]@($signature.Library), $fields,
+                [object[]]@($true, [Runtime.InteropServices.CharSet]::Unicode))
+            $method.SetCustomAttribute($attribute)
+            $method.SetImplementationFlags('PreserveSig')
+        }
+        $null = $type.CreateType()
+    }
+
+    if ($ParentPath -notmatch '^[A-Za-z]:\\' -or $ParentPath.IndexOf(':', 2) -ge 0) {
+        throw 'BackupDir must be an absolute local drive path.'
+    }
+    $full = [IO.Path]::GetFullPath($ParentPath)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([IO.DriveInfo]::new($root).DriveType -ne [IO.DriveType]::Fixed) {
+        throw 'BackupDir must be on a local fixed drive.'
+    }
+    $trustedOwners = @('S-1-5-18', 'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $handles = [Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+    $info = [Runtime.InteropServices.Marshal]::AllocHGlobal(8)
+    try {
+        $paths = [Collections.Generic.List[string]]::new()
+        $paths.Add($root)
+        $current = $root
+        foreach ($part in $full.Substring($root.Length).Split([char[]]@('\'), [StringSplitOptions]::RemoveEmptyEntries)) {
+            if ($part.EndsWith('.') -or $part.EndsWith(' ')) {
+                throw 'BackupDir contains an ambiguous path component.'
+            }
+            $current = [IO.Path]::Combine($current, $part)
+            $paths.Add($current)
+        }
+
+        # Check the whole chain, root first. Also pin and validate the run directory
+        # after creating it with its final protected DACL, never by repairing a path.
+        $runPath = [IO.Path]::Combine($full, "UPConvert-$([Guid]::NewGuid().ToString('N'))")
+        $paths.Add($runPath)
+        foreach ($path in $paths) {
+            if ($path -eq $runPath) {
+                $security = [Security.AccessControl.DirectorySecurity]::new()
+                $security.SetSecurityDescriptorSddlForm('O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+                $descriptor = $security.GetSecurityDescriptorBinaryForm()
+                $attributes = [IntPtr]::Zero
+                $pinned = [Runtime.InteropServices.GCHandle]::Alloc($descriptor, 'Pinned')
+                try {
+                    $attributes = [Runtime.InteropServices.Marshal]::AllocHGlobal(3 * [IntPtr]::Size)
+                    [Runtime.InteropServices.Marshal]::WriteInt32($attributes, 0, 3 * [IntPtr]::Size)
+                    [Runtime.InteropServices.Marshal]::WriteIntPtr($attributes, [IntPtr]::Size, $pinned.AddrOfPinnedObject())
+                    [Runtime.InteropServices.Marshal]::WriteInt32($attributes, 2 * [IntPtr]::Size, 0)
+                    if (-not [UPConvert.StagingNative]::CreateDirectoryW($path, $attributes)) {
+                        throw [ComponentModel.Win32Exception]::new(
+                            [Runtime.InteropServices.Marshal]::GetLastWin32Error(), 'Cannot create private backup directory.')
+                    }
+                }
+                finally {
+                    if ($attributes -ne [IntPtr]::Zero) {
+                        [Runtime.InteropServices.Marshal]::FreeHGlobal($attributes)
+                    }
+                    $pinned.Free()
+                }
+            }
+
+            $handle = Open-PinnedConversionDirectory -Path $path
+            $handles.Add($handle)
+            if (-not [UPConvert.StagingNative]::GetFileInformationByHandleEx($handle, 9, $info, 8)) {
+                throw [ComponentModel.Win32Exception]::new(
+                    [Runtime.InteropServices.Marshal]::GetLastWin32Error(), "Cannot inspect: $path")
+            }
+            $flags = [Runtime.InteropServices.Marshal]::ReadInt32($info)
+            if (($flags -band 0x10) -eq 0 -or ($flags -band 0x400) -ne 0) {
+                throw "Backup ancestors must be directories, not reparse points: $path"
+            }
+            # Read security through the pinned handle, not the path: a hostile
+            # directory must not race the reparse check and redirect an ACL read.
+            $nativeDescriptor = [IntPtr]::Zero
+            try {
+                $errorCode = [UPConvert.StagingNative]::GetSecurityInfo($handle, 1, 5,
+                    [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$nativeDescriptor)
+                if ($errorCode -ne 0) {
+                    throw [ComponentModel.Win32Exception]::new($errorCode, "Cannot read backup ancestor ACL: $path")
+                }
+                $bytes = [byte[]]::new([UPConvert.StagingNative]::GetSecurityDescriptorLength($nativeDescriptor))
+                [Runtime.InteropServices.Marshal]::Copy($nativeDescriptor, $bytes, 0, $bytes.Length)
+                $raw = [Security.AccessControl.RawSecurityDescriptor]::new($bytes, 0)
+            }
+            finally {
+                if ($nativeDescriptor -ne [IntPtr]::Zero) {
+                    $null = [UPConvert.StagingNative]::LocalFree($nativeDescriptor)
+                }
+            }
+            if ($null -eq $raw.Owner -or $raw.Owner.Value -notin $trustedOwners) {
+                throw "Untrusted backup ancestor owner: $path"
+            }
+            if ($null -eq $raw.DiscretionaryAcl) {
+                throw "Backup ancestor has an unrestricted DACL: $path"
+            }
+            # Allow adding sibling directories, but reject rights that can change
+            # a directory/reparse point or delete children. Deny ACEs do not excuse grants.
+            $unsafeRights = [int][Security.AccessControl.FileSystemRights]'WriteData, WriteAttributes, WriteExtendedAttributes, Delete, DeleteSubdirectoriesAndFiles, ChangePermissions, TakeOwnership'
+            $unsafeRights = $unsafeRights -bor 0x50000000 # GENERIC_WRITE | GENERIC_ALL
+            foreach ($ace in $raw.DiscretionaryAcl) {
+                if ($ace -isnot [Security.AccessControl.QualifiedAce]) {
+                    throw "Unsupported backup ancestor ACE: $path"
+                }
+                if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
+                    ([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -eq 0 -and
+                    ($ace.AccessMask -band $unsafeRights) -ne 0 -and
+                    $ace.SecurityIdentifier.Value -notin $trustedOwners) {
+                    throw "Untrusted write access on backup ancestor: $path"
+                }
+            }
+        }
+        return [pscustomobject]@{ Path = $runPath; Handles = $handles }
+    }
+    catch {
+        foreach ($handle in $handles) { $handle.Dispose() }
+        throw
+    }
+    finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($info) }
 }
 
 # --- Helpers (hive load/unload, copied/adapted from upcleanup.ps1) ------------
@@ -505,6 +696,23 @@ function Build-PerUserRegContent {
 
 # --- Main ---------------------------------------------------------------------
 
+function Write-ConversionRegFile {
+    param ([string]$Path, [string]$Content)
+
+    $ErrorActionPreference = 'Stop'
+    $stream = [IO.FileStream]::new($Path, [IO.FileMode]::CreateNew,
+                                 [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    try {
+        $writer = [IO.StreamWriter]::new($stream, [Text.UnicodeEncoding]::new($false, $true))
+        try {
+            $writer.NewLine = "`r`n"
+            $writer.Write($Content)
+        }
+        finally { $writer.Dispose() }
+    }
+    finally { $stream.Dispose() }
+}
+
 function Convert-OnePrinter {
     param (
         [Parameter(Mandatory = $true)][string]$ShareId,
@@ -529,24 +737,32 @@ function Convert-OnePrinter {
         return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'no DAF entry'; Installs = @() }
     }
 
-    # 2) Backup per-system entry
+    # 2) Backup per-system entry; dry runs never create or read staging files.
     $backupFile = Join-Path $BackupDir "PerSystem-MCP-$ShareId-$Timestamp.reg"
     Write-Host "Step 1: Exporting per-system DAF entry to backup..." -ForegroundColor Cyan
     Write-Host "  $backupFile"
-    $null = reg export $regPerSysKey $backupFile /y 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: reg export failed for $regPerSysKey" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'export failed'; Installs = @() }
-    }
+    if ($WhatIfMode) {
+        Write-Host "  [WHATIF] Would export and parse the per-system DAF entry in a private run directory."
+        $perSystem = @{}
+    } else {
+        if ([IO.File]::Exists($backupFile)) {
+            throw "Refusing to overwrite an existing backup: $backupFile"
+        }
+        $null = reg export $regPerSysKey $backupFile 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: reg export failed for $regPerSysKey" -ForegroundColor Red
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'export failed'; Installs = @() }
+        }
 
-    # 3) Parse per-system properties
-    Write-Host "Step 2: Parsing per-system DAF properties..." -ForegroundColor Cyan
-    $perSystem = Read-DafExport -RegFilePath $backupFile -AnchorMcpKey "MCP#$ShareId"
-    if ($perSystem.Count -eq 0) {
-        Write-Host "ERROR: No DAF properties parsed from $backupFile" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'parse failed'; Installs = @() }
+        # 3) Read only the export in the pinned private run directory.
+        Write-Host "Step 2: Parsing per-system DAF properties..." -ForegroundColor Cyan
+        $perSystem = Read-DafExport -RegFilePath $backupFile -AnchorMcpKey "MCP#$ShareId"
+        if ($perSystem.Count -eq 0) {
+            Write-Host "ERROR: No DAF properties parsed from $backupFile" -ForegroundColor Red
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'parse failed'; Installs = @() }
+        }
+        Write-Host "  Found $($perSystem.Count) properties."
     }
-    Write-Host "  Found $($perSystem.Count) properties."
 
     # 4) Disassociate per-system AEP via pairtool
     if (-not $SkipDisassociate) {
@@ -580,11 +796,21 @@ function Convert-OnePrinter {
     # 5) For each user, write per-user DAF entry
     Write-Host "Step 4: Writing per-user DAF entries..." -ForegroundColor Cyan
     $installs = @()
+    $attemptedSIDs = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($sid in $TargetSIDs) {
+        $canonicalSID = [Security.Principal.SecurityIdentifier]::new($sid).Value
+        if (-not $attemptedSIDs.Add($canonicalSID)) {
+            Write-Host "  User ${sid}: already attempted; skipping duplicate." -ForegroundColor DarkGray
+            continue
+        }
         Write-Host ""
         Write-Host "  User: $sid" -ForegroundColor White
         $weLoaded = $false
         try {
+            if ($WhatIfMode) {
+                Write-Host "    [WHATIF] Would load the hive if needed, generate a private .reg file, and import it."
+                continue
+            }
             if (-not (Test-HiveLoaded -UserSID $sid)) {
                 $weLoaded = Mount-UserHive -UserSID $sid
                 if (-not (Test-HiveLoaded -UserSID $sid)) {
@@ -602,23 +828,21 @@ function Convert-OnePrinter {
                 -PerSystem $perSystem
 
             $regFile = Join-Path $BackupDir "PerUser-$sid-MCP-$ShareId-$Timestamp.reg"
-            $writer = [IO.StreamWriter]::new($regFile, $false, [Text.UnicodeEncoding]::new($false, $true))
-            $writer.NewLine = "`r`n"
-            $writer.Write($regContent)
-            $writer.Dispose()
+            try {
+                Write-ConversionRegFile -Path $regFile -Content $regContent
+            }
+            catch {
+                throw "Cannot write conversion payload '$regFile'; no import attempted for this user. $($_.Exception.Message)"
+            }
             Write-Host "    Generated: $regFile" -ForegroundColor DarkGray
             Write-Host "    Instance GUID: $instanceGuid"
 
-            if ($WhatIfMode) {
-                Write-Host "    [WHATIF] Would import the .reg file above."
+            $null = reg import $regFile 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "    Imported successfully." -ForegroundColor Green
+                $installs += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile }
             } else {
-                $null = reg import $regFile 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "    Imported successfully." -ForegroundColor Green
-                    $installs += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile }
-                } else {
-                    Write-Host "    ERROR: reg import failed (exit $LASTEXITCODE)." -ForegroundColor Red
-                }
+                Write-Host "    ERROR: reg import failed (exit $LASTEXITCODE)." -ForegroundColor Red
             }
         }
         finally {
@@ -667,17 +891,38 @@ if ($targetSIDs.Count -eq 0) {
     exit 0
 }
 
+foreach ($sid in $targetSIDs) {
+    if ($sid -notmatch '^S-1-(?:5-21|12-1)-\d+-\d+-\d+-\d+$') {
+        throw "Invalid real-user SID: $sid"
+    }
+    $null = [Security.Principal.SecurityIdentifier]::new($sid)
+}
+
 # --- Convert each printer ----------------------------------------------------
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $results = @()
-foreach ($sid in $shareIdsToConvert) {
-    # Force scalar capture: if Convert-OnePrinter ever leaks stdout, $r could become an array.
-    # Wrap with @(...) and grab the last element (the [pscustomobject] result we explicitly return).
-    $r = @(Convert-OnePrinter -ShareId $sid -TenantId $TenantId -TargetSIDs $targetSIDs `
-                              -Timestamp $timestamp -BackupDir $BackupDir `
-                              -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
-    $results += ,($r[-1])
+$staging = $null
+try {
+    if (-not $WhatIfMode) {
+        $staging = New-PrivateConversionDirectory -ParentPath $BackupDir
+        $BackupDir = $staging.Path
+        Write-Host "Private backup directory: $BackupDir" -ForegroundColor Cyan
+    }
+    foreach ($sid in $shareIdsToConvert) {
+        # Force scalar capture: if Convert-OnePrinter ever leaks stdout, $r could become an array.
+        # Wrap with @(...) and grab the last element (the [pscustomobject] result we explicitly return).
+        $r = @(Convert-OnePrinter -ShareId $sid -TenantId $TenantId -TargetSIDs $targetSIDs `
+                                  -Timestamp $timestamp -BackupDir $BackupDir `
+                                  -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
+        $results += ,($r[-1])
+    }
+}
+finally {
+    # Keep useful backups, but release path pins even if conversion fails.
+    if ($null -ne $staging) {
+        foreach ($handle in $staging.Handles) { $handle.Dispose() }
+    }
 }
 
 # --- Restart services (once) -------------------------------------------------
