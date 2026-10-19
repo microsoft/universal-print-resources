@@ -208,7 +208,7 @@ Assert-True ($script:RegCalls.Count -eq 2) 'Invalid SID never reaches conversion
     $flowFiles = [Collections.Generic.List[string]]::new()
     try {
         foreach ($preference in @('Continue', 'Stop')) {
-            foreach ($failure in @('collision', 'open', 'write', 'duplicate')) {
+            foreach ($failure in @('collision', 'open', 'write', 'duplicate', 'duplicate-skip', 'duplicate-whatif')) {
                 . ([scriptblock]::Create($writeDefinition))
                 if ($failure -eq 'open') {
                     . ([scriptblock]::Create($writeDefinition.Replace(
@@ -221,10 +221,18 @@ Assert-True ($script:RegCalls.Count -eq 2) 'Invalid SID never reaches conversion
                 $payload = Join-Path $flowRoot "PerUser-$sid-MCP-$share-$stamp.reg"
                 $flowFiles.Add($payload)
                 if ($failure -eq 'collision') { [IO.File]::WriteAllText($payload, 'sentinel') }
-                $targets = if ($failure -eq 'duplicate') {
-                    @($sid, $sid, 'S-1-5-21-100-200-300-1002')
+                $duplicates = $failure -like 'duplicate*'
+                $laterSID = 'S-1-5-21-100-200-300-1002'
+                $laterPayload = Join-Path $flowRoot "PerUser-$laterSID-MCP-$share-$stamp.reg"
+                $flowFiles.Add($laterPayload)
+                $targets = if ($duplicates) {
+                    @($sid, $sid.ToLowerInvariant(), $laterSID, $sid)
                 } else { @($sid) }
-                $state = @{ Queries = 0; Imports = 0 }
+                $state = @{
+                    Queries = 0; Imports = 0; ImportPaths = [Collections.Generic.List[string]]::new()
+                    SkipSID = $(if ($failure -eq 'duplicate-skip') { $sid } else { '' })
+                    WhatIf = ($failure -eq 'duplicate-whatif')
+                }
                 # A separate runspace avoids the harness's outer try/catch
                 # changing how statement-terminating errors propagate.
                 $runner = [powershell]::Create()
@@ -232,14 +240,15 @@ Assert-True ($script:RegCalls.Count -eq 2) 'Invalid SID never reaches conversion
                     $body = @'
 param ($preference, $state, $share, $tenant, $targets, $stamp, $flowRoot)
 $ErrorActionPreference = $preference
-function Test-HiveLoaded { return $true }
+function Test-HiveLoaded { param($UserSID) return ($UserSID -ne $state.SkipSID) }
+function Mount-UserHive { return $false }
 function Build-PerUserRegContent { return 'generated payload' }
 function Read-DafExport { return @{ Property = 'mocked property' } }
 function reg {
     switch ($args[0]) {
         'query' { $state.Queries++ }
         'export' { }
-        'import' { $state.Imports++ }
+        'import' { $state.Imports++; $state.ImportPaths.Add($args[1]) }
         default { throw "Unexpected command: $args" }
     }
     $script:LASTEXITCODE = 0
@@ -249,7 +258,7 @@ function reg {
                     $body += "`r`nfunction Write-ConversionRegFile {`r`n$writeBody`r`n}`r`n" + $convertDefinition + @'
 
 $REG_PERSYS_BASE = 'mocked-store'
-$result = Convert-OnePrinter -ShareId $share -TenantId $tenant -TargetSIDs $targets -Timestamp $stamp -BackupDir $flowRoot -SkipDisassociate
+$result = Convert-OnePrinter -ShareId $share -TenantId $tenant -TargetSIDs $targets -Timestamp $stamp -BackupDir $flowRoot -SkipDisassociate -WhatIfMode:$state.WhatIf
 'returned-from-conversion'
 '@
                     $null = $runner.AddScript($body).AddArgument($preference).AddArgument($state).
@@ -259,23 +268,38 @@ $result = Convert-OnePrinter -ShareId $share -TenantId $tenant -TargetSIDs $targ
                     $invocationError = $null
                     try { $output = $runner.Invoke() } catch { $invocationError = $_ }
                     $errors = @($runner.Streams.Error)
+                    $duplicateMessages = @($runner.Streams.Information | Where-Object {
+                        $_.MessageData.ToString() -like '*already attempted; skipping duplicate.*'
+                    })
                     if ($errors.Count -eq 0 -and $null -ne $invocationError) {
                         $errors = @($invocationError)
                     }
                 }
                 finally { $runner.Dispose() }
-                Assert-True ($output -notcontains 'returned-from-conversion' -and $errors.Count -gt 0) `
-                    "$preference/$failure fails closed without an enclosing catch."
-                Assert-True ($errors[-1].Exception.Message -like '*Cannot write conversion payload*') `
-                    "$preference/$failure surfaces the payload error explicitly."
-                $expectedImports = if ($failure -eq 'duplicate') { 1 } else { 0 }
+                if ($duplicates) {
+                    Assert-True ($output -contains 'returned-from-conversion' -and $errors.Count -eq 0) `
+                        "$preference/$failure no-ops duplicates and continues distinct users."
+                    Assert-True ($duplicateMessages.Count -eq 2) 'Each duplicate occurrence prints a message.'
+                } else {
+                    Assert-True ($output -notcontains 'returned-from-conversion' -and $errors.Count -gt 0) `
+                        "$preference/$failure fails closed without an enclosing catch."
+                    Assert-True ($errors[-1].Exception.Message -like '*Cannot write conversion payload*') `
+                        "$preference/$failure surfaces the payload error explicitly."
+                }
+                $expectedImports = switch ($failure) { 'duplicate' { 2 }; 'duplicate-skip' { 1 }; default { 0 } }
                 Assert-True ($state.Imports -eq $expectedImports) "$preference/$failure never imports stale/partial bytes."
+                if ($failure -eq 'duplicate') {
+                    Assert-True ($state.ImportPaths[0] -eq $payload -and $state.ImportPaths[1] -eq $laterPayload) `
+                        'Unique users are imported in first-seen order.'
+                } elseif ($failure -eq 'duplicate-skip') {
+                    Assert-True ($state.ImportPaths[0] -eq $laterPayload) 'An unavailable first user is not retried.'
+                }
                 Assert-True ($state.Queries -eq 1) "$preference/$failure queries once per printer, not per SID."
                 if ($failure -eq 'collision') {
                     Assert-True ([IO.File]::ReadAllText($payload) -eq 'sentinel') 'Existing payload is unchanged.'
                 }
-                $laterPayload = Join-Path $flowRoot "PerUser-S-1-5-21-100-200-300-1002-MCP-$share-$stamp.reg"
-                Assert-True (-not [IO.File]::Exists($laterPayload)) 'Failure terminates before a later user.'
+                Assert-True ([IO.File]::Exists($laterPayload) -eq ($failure -in @('duplicate', 'duplicate-skip'))) `
+                    'Distinct users proceed only when conversion has not failed or is dry-run.'
             }
         }
     }

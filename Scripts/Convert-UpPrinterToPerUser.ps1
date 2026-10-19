@@ -22,6 +22,8 @@
 # rejected; ancestor handles remain open throughout conversion. Do not relax
 # the run directory's ACLs or import backups from an untrusted location.
 # -WhatIfMode does not create files, load hives, or change printer state.
+# Repeated target-user SIDs are skipped with a message after their first attempt
+# for each printer, including when that first attempt found no available hive.
 # Editing this signed sample invalidates its original Authenticode signature;
 # review and re-sign the modified script before deployment where required.
 
@@ -794,7 +796,13 @@ function Convert-OnePrinter {
     # 5) For each user, write per-user DAF entry
     Write-Host "Step 4: Writing per-user DAF entries..." -ForegroundColor Cyan
     $installs = @()
+    $attemptedSIDs = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($sid in $TargetSIDs) {
+        $canonicalSID = [Security.Principal.SecurityIdentifier]::new($sid).Value
+        if (-not $attemptedSIDs.Add($canonicalSID)) {
+            Write-Host "  User ${sid}: already attempted; skipping duplicate." -ForegroundColor DarkGray
+            continue
+        }
         Write-Host ""
         Write-Host "  User: $sid" -ForegroundColor White
         $weLoaded = $false
