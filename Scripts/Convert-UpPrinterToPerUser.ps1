@@ -918,6 +918,12 @@ try {
         $results += ,($r[-1])
     }
 }
+catch {
+    # A caller's SilentlyContinue must not turn a fatal conversion error into
+    # service restarts and a zero-count success summary.
+    Write-Error -Message "Conversion aborted: $($_.Exception.Message)" -ErrorAction Continue
+    exit 1
+}
 finally {
     # Keep useful backups, but release path pins even if conversion fails.
     if ($null -ne $staging) {

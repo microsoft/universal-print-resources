@@ -101,6 +101,77 @@ $parseErrors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$parseErrors)
 Assert-True ($parseErrors.Count -eq 0) "Script parses: $($parseErrors -join '; ')"
 
+# Run the actual entry point in a child process so exit status and the absence
+# of post-failure restarts/summary are checked, not inferred from a function test.
+$fatalScript = $ast.Extent.Text.Split(@('# SIG # Begin signature block'), [StringSplitOptions]::None)[0]
+$fatalScript = $fatalScript.Replace(
+    '[Security.Principal.WindowsIdentity]::GetCurrent().Name', "'NT AUTHORITY\SYSTEM'")
+$mocks = @{
+    'New-PrivateConversionDirectory' = @'
+function New-PrivateConversionDirectory {
+    if ($env:UPCONVERT_TEST_FAILURE -eq 'staging') { throw 'Injected staging failure' }
+    $pin = [pscustomobject]@{}
+    $pin | Add-Member -MemberType ScriptMethod -Name Dispose -Value { Write-Host 'STAGING PIN RELEASED' }
+    return [pscustomobject]@{ Path = $env:UPCONVERT_TEST_PARENT; Handles = @($pin) }
+}
+'@
+    'Read-DafExport' = 'function Read-DafExport { return @{ MockProperty = 1 } }'
+    'Test-HiveLoaded' = 'function Test-HiveLoaded { return $true }'
+    'Build-PerUserRegContent' = "function Build-PerUserRegContent { return 'mocked payload' }"
+    'Write-ConversionRegFile' = "function Write-ConversionRegFile { throw 'Injected payload failure' }"
+}
+foreach ($name in $mocks.Keys) {
+    $definition = $ast.Find({
+        param ($node)
+        $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+    }, $true)
+    $fatalScript = $fatalScript.Replace($definition.Extent.Text, $mocks[$name])
+}
+$childPath = Join-Path $PSScriptRoot ("UPConvert-Fatal-$([Guid]::NewGuid().ToString('N')).ps1")
+$hostPath = (Get-Process -Id $PID).Path
+$oldFailure = $env:UPCONVERT_TEST_FAILURE
+$oldParent = $env:UPCONVERT_TEST_PARENT
+try {
+    $env:UPCONVERT_TEST_PARENT = $PSScriptRoot
+    $preamble = @'
+function reg {
+    if ($args[0] -eq 'import') { throw 'UNEXPECTED REGISTRY IMPORT' }
+    $script:LASTEXITCODE = 0
+}
+function Restart-Service { Write-Output 'UNEXPECTED SERVICE RESTART'; throw 'Host operation forbidden' }
+'@
+    [IO.File]::WriteAllText($childPath, $preamble + "`r`n" + @'
+$conversion = {
+'@ + "`r`n" + $fatalScript + "`r`n}" + @'
+
+& $conversion -ShareId '11111111-2222-3333-4444-555555555555' -TenantId '66666666-7777-8888-9999-000000000000' -UserSIDs 'S-1-5-21-100-200-300-1001' -BackupDir $env:UPCONVERT_TEST_PARENT -SkipDisassociate -ErrorAction SilentlyContinue
+'@)
+    foreach ($failure in @('staging', 'payload')) {
+        $env:UPCONVERT_TEST_FAILURE = $failure
+        $result = & {
+            $ErrorActionPreference = 'Continue'
+            $output = & $hostPath -NoProfile -File $childPath 2>&1
+            [pscustomobject]@{ ExitCode = $LASTEXITCODE; Text = $output -join "`n" }
+        }
+        $exitCode = $result.ExitCode
+        $text = $result.Text
+        Assert-True ($exitCode -eq 1) "$failure under SilentlyContinue exits 1."
+        Assert-True ($text -match 'Conversion aborted:' -and $text -match "Injected $failure failure") `
+            "$failure remains visible despite SilentlyContinue. Output: $text"
+        Assert-True ($text -notmatch 'UNEXPECTED SERVICE RESTART|UNEXPECTED REGISTRY IMPORT|=== Summary ===|Done\.') `
+            "$failure cannot restart services or print a success summary."
+        if ($failure -eq 'payload') {
+            Assert-True ($text -match 'STAGING PIN RELEASED') 'Fatal exit still releases staging handles in finally.'
+        }
+    }
+}
+finally {
+    $env:UPCONVERT_TEST_FAILURE = $oldFailure
+    $env:UPCONVERT_TEST_PARENT = $oldParent
+    if ([IO.File]::Exists($childPath)) { [IO.File]::Delete($childPath) }
+}
+Write-Host 'PASS: staging and payload fatal entry-point failures exit 1 under SilentlyContinue.'
+
 $parentValidation = $ast.Find({
     param ($node)
     $node -is [Management.Automation.Language.IfStatementAst] -and
