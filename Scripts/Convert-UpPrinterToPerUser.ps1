@@ -891,19 +891,31 @@ if ($targetSIDs.Count -eq 0) {
     exit 0
 }
 
-foreach ($sid in $targetSIDs) {
-    if ($sid -notmatch '^S-1-(?:5-21|12-1)-\d+-\d+-\d+-\d+$') {
-        throw "Invalid real-user SID: $sid"
-    }
-    $null = [Security.Principal.SecurityIdentifier]::new($sid)
-}
-
 # --- Convert each printer ----------------------------------------------------
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $results = @()
 $staging = $null
 try {
+    foreach ($sid in $targetSIDs) {
+        if ($sid -notmatch '^S-1-(?:5-21|12-1)-\d+-\d+-\d+-\d+$') {
+            throw "Invalid real-user SID: $sid"
+        }
+        # The Windows SID parser clamps overflowing subauthorities instead of
+        # rejecting them, so check their range before constructing the SID.
+        foreach ($part in ($sid -split '-' | Select-Object -Skip 3)) {
+            $subAuthority = [uint32]0
+            if (-not [uint32]::TryParse($part, [ref]$subAuthority)) {
+                throw "Invalid real-user SID: $sid"
+            }
+        }
+        try {
+            $null = [Security.Principal.SecurityIdentifier]::new($sid)
+        }
+        catch {
+            throw "Invalid real-user SID: $sid. $($_.Exception.Message)"
+        }
+    }
     if (-not $WhatIfMode) {
         $staging = New-PrivateConversionDirectory -ParentPath $BackupDir
         $BackupDir = $staging.Path

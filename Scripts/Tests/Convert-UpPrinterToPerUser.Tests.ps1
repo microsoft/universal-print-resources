@@ -109,6 +109,7 @@ $fatalScript = $fatalScript.Replace(
 $mocks = @{
     'New-PrivateConversionDirectory' = @'
 function New-PrivateConversionDirectory {
+    Write-Host 'STAGING ATTEMPTED'
     if ($env:UPCONVERT_TEST_FAILURE -eq 'staging') { throw 'Injected staging failure' }
     $pin = [pscustomobject]@{}
     $pin | Add-Member -MemberType ScriptMethod -Name Dispose -Value { Write-Host 'STAGING PIN RELEASED' }
@@ -127,6 +128,9 @@ foreach ($name in $mocks.Keys) {
     }, $true)
     $fatalScript = $fatalScript.Replace($definition.Extent.Text, $mocks[$name])
 }
+    $fatalScript = $fatalScript.Replace(
+        '$pairtoolOutput = & $pairtool -disassociate "MCP#$ShareId" 2>&1',
+        "throw 'UNEXPECTED PAIRTOOL CALL'")
 $childPath = Join-Path $PSScriptRoot ("UPConvert-Fatal-$([Guid]::NewGuid().ToString('N')).ps1")
 $hostPath = (Get-Process -Id $PID).Path
 $oldFailure = $env:UPCONVERT_TEST_FAILURE
@@ -144,9 +148,17 @@ function Restart-Service { Write-Output 'UNEXPECTED SERVICE RESTART'; throw 'Hos
 $conversion = {
 '@ + "`r`n" + $fatalScript + "`r`n}" + @'
 
-& $conversion -ShareId '11111111-2222-3333-4444-555555555555' -TenantId '66666666-7777-8888-9999-000000000000' -UserSIDs 'S-1-5-21-100-200-300-1001' -BackupDir $env:UPCONVERT_TEST_PARENT -SkipDisassociate -ErrorAction SilentlyContinue
+$invalidSID = switch ($env:UPCONVERT_TEST_FAILURE) {
+    'sid-shape' { 'S-1-5-21-111-222-333' }
+    'sid-path' { '..\outside' }
+    'sid-parse' { 'S-1-5-21-111-222-333-999999999999999999999999' }
+    'sid-whatif' { 'S-1-5-21-111-222-333' }
+}
+$targetSIDs = @('S-1-5-21-100-200-300-1001')
+if ($invalidSID) { $targetSIDs += $invalidSID }
+& $conversion -ShareId '11111111-2222-3333-4444-555555555555' -TenantId '66666666-7777-8888-9999-000000000000' -UserSIDs $targetSIDs -BackupDir $env:UPCONVERT_TEST_PARENT -SkipDisassociate:(!$invalidSID) -WhatIfMode:($env:UPCONVERT_TEST_FAILURE -eq 'sid-whatif') -ErrorAction SilentlyContinue
 '@)
-    foreach ($failure in @('staging', 'payload')) {
+    foreach ($failure in @('staging', 'payload', 'sid-shape', 'sid-path', 'sid-parse', 'sid-whatif')) {
         $env:UPCONVERT_TEST_FAILURE = $failure
         $result = & {
             $ErrorActionPreference = 'Continue'
@@ -156,12 +168,19 @@ $conversion = {
         $exitCode = $result.ExitCode
         $text = $result.Text
         Assert-True ($exitCode -eq 1) "$failure under SilentlyContinue exits 1."
-        Assert-True ($text -match 'Conversion aborted:' -and $text -match "Injected $failure failure") `
+        $expectedError = if ($failure -like 'sid-*') {
+            'Invalid real-user SID'
+        } else { "Injected $failure failure" }
+        Assert-True ($text -match 'Conversion aborted:' -and $text -match $expectedError) `
             "$failure remains visible despite SilentlyContinue. Output: $text"
-        Assert-True ($text -notmatch 'UNEXPECTED SERVICE RESTART|UNEXPECTED REGISTRY IMPORT|=== Summary ===|Done\.') `
+        Assert-True ($text -notmatch 'UNEXPECTED SERVICE RESTART|UNEXPECTED REGISTRY IMPORT|UNEXPECTED PAIRTOOL CALL|=== Summary ===|Done\.') `
             "$failure cannot restart services or print a success summary."
         if ($failure -eq 'payload') {
             Assert-True ($text -match 'STAGING PIN RELEASED') 'Fatal exit still releases staging handles in finally.'
+        }
+        if ($failure -like 'sid-*') {
+            Assert-True ($text -notmatch 'STAGING ATTEMPTED|Step 1:|Step 3:|Converting printer ShareId:') `
+                'All target SIDs are validated before staging, export or disassociation.'
         }
     }
 }
@@ -170,7 +189,7 @@ finally {
     $env:UPCONVERT_TEST_PARENT = $oldParent
     if ([IO.File]::Exists($childPath)) { [IO.File]::Delete($childPath) }
 }
-Write-Host 'PASS: staging and payload fatal entry-point failures exit 1 under SilentlyContinue.'
+Write-Host 'PASS: invalid SID, staging and payload fatal entry-point failures exit 1 under SilentlyContinue.'
 
 $parentValidation = $ast.Find({
     param ($node)
@@ -256,11 +275,6 @@ $entryPoint = [scriptblock]::Create($ast.Extent.Text)
     -BackupDir $untouchedPath -WhatIfMode -SkipDisassociate
 Assert-True (-not (Test-Path -LiteralPath $untouchedPath)) 'WhatIf entry point creates no directories.'
 Assert-True ($script:RegCalls.Count -eq 2) 'WhatIf entry point only adds a read-only query.'
-Assert-Throws {
-    & $entryPoint -ShareId $share -TenantId $tenant -UserSIDs '..\outside' `
-        -BackupDir $untouchedPath -WhatIfMode -SkipDisassociate
-} 'Invalid SID path fragments are rejected before conversion.' 'Invalid real-user SID'
-Assert-True ($script:RegCalls.Count -eq 2) 'Invalid SID never reaches conversion.'
 
 # Keep assertions strict, but invoke the production function with each caller's
 # actual preference. Only registry/hive/payload-building operations are mocked.
