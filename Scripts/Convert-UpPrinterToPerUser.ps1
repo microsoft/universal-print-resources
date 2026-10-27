@@ -154,10 +154,12 @@ function Assert-SystemTempParent {
     # low-privileged replacement/redirection. Validate SystemTemp itself strictly.
     $trusted = @('S-1-5-18', 'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    # Refuse missing/redirected parents rather than provisioning or repairing them.
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "SystemTemp must be an existing ordinary directory: $Path"
     }
+    # Check ownership and the complete DACL before allowing any private child creation.
     $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
     $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
         $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All))
@@ -180,14 +182,18 @@ function Assert-SystemTempParent {
 
 function New-PrivateStagingDirectory {
     try {
+        # Use the OS Windows location, not caller-controlled temp environment overrides.
         $windows = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
         if (-not $windows) { throw 'Cannot locate the Windows directory for fixed SystemTemp staging.' }
         $parent = [IO.Path]::Combine($windows, 'SystemTemp')
         Assert-SystemTempParent -Path $parent
+        # Never reuse an existing run directory, even if its random name collides.
         $path = [IO.Path]::Combine($parent, "UPConvert-$([Guid]::NewGuid().ToString('N'))")
         if ([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) {
             throw "Staging directory collision: $path"
         }
+        # Build a non-inheriting SYSTEM/Admins-only ACL before the directory exists;
+        # child files inherit this protection throughout export, reread, and import.
         $security = [Security.AccessControl.DirectorySecurity]::new()
         $security.SetAccessRuleProtection($true, $false)
         $security.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-18'))
@@ -217,6 +223,7 @@ function Write-NewStagingFile {
     $writer = $null
     try {
         try {
+            # CreateNew rejects stale files; exclusive access prevents concurrent writes.
             $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew,
                 [IO.FileAccess]::Write, [IO.FileShare]::None)
             $writer = [IO.StreamWriter]::new($stream, [Text.UnicodeEncoding]::new($false, $true))
@@ -224,10 +231,14 @@ function Write-NewStagingFile {
             $writer.Write($Content)
         }
         finally {
+            # Flush and close before reg.exe reopens the path; the private directory
+            # protects the closed-file interval. Dispose also runs after write errors.
             if ($null -ne $writer) { $writer.Dispose() }
             elseif ($null -ne $stream) { $stream.Dispose() }
         }
     } catch {
+        # Delete only output we created, never a colliding file. Preserve the failure
+        # so callers cannot import a partially written payload.
         if ($null -ne $stream) {
             try { [IO.File]::Delete($Path) }
             catch { Write-Warning "Could not remove partial private file '$Path': $_" -WarningAction Continue }
@@ -646,8 +657,8 @@ function Convert-OnePrinter {
         }
     }
 
-    # 3) Parse the private backup. Limit Stop to file preparation;
-    # preserve legacy native reg.exe stderr behavior.
+    # 3) Reread only the private export, never a user-selectable backup path.
+    # Limit Stop to file preparation; preserve legacy native reg.exe stderr behavior.
     $savedPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Stop'
@@ -707,6 +718,9 @@ function Convert-OnePrinter {
                 }
             }
 
+            # Preserve the baseline order: build only after disassociation and hive
+            # availability. Stop-scoped preparation must succeed before this import;
+            # failure may leave earlier migration steps applied, not rolled back.
             $savedPreference = $ErrorActionPreference
             try {
                 $ErrorActionPreference = 'Stop'
@@ -795,6 +809,8 @@ foreach ($sid in $shareIdsToConvert) {
                               -Timestamp $timestamp `
                               -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
     $results += ,($r[-1])
+    # Explicit status propagation stops even with caller SilentlyContinue, without
+    # changing native/hive error handling or restarting services after this failure.
     if ($r[-1].PreparationFailed) {
         Write-Host "ERROR: Conversion stopped; no incomplete payload was imported. Disassociation or earlier user imports may already have occurred. Complete private backups, if any, were retained." -ForegroundColor Red
         exit 1
