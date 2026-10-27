@@ -50,12 +50,16 @@ before creation in the checked parent; individual files use exclusive
 backup file. Both the export reread and every subsequent import use only the
 private directory.
 
-All per-user payloads are fully written and their writers disposed before
-pairtool disassociation. Preparation failures are reported explicitly and stop
-the script with exit code 1 before that printer's disassociation/import and before
-service restarts, including with caller error preferences `Continue`, `Stop`, or
-`SilentlyContinue`. Stop is scoped to file preparation, not applied globally to
-legacy native stderr or hive operations.
+The baseline migration order is preserved: export/read the backup, disassociate
+via pairtool, then check/load each user's hive and build, securely write, and
+import that user's payload. The existing parser and payload builder are unchanged;
+payload generation is not moved ahead of disassociation or hive availability.
+Each writer is disposed before its file is imported. Preparation failures are
+reported explicitly and stop the script with exit code 1 before importing the
+failed payload or restarting services, including with caller error preferences
+`Continue`, `Stop`, or `SilentlyContinue`. Disassociation and earlier successful
+user imports may already have occurred. Stop is scoped to file preparation, not
+applied globally to legacy native stderr or hive operations.
 
 Complete per-system exports and generated per-user files remain in the private
 directory, including useful completed files when a later preparation fails.
@@ -70,7 +74,9 @@ user-editable backup files as SYSTEM.
 
 This is not transactional migration or complete recovery tooling. An exported
 DAF registry entry alone is not a promise that pairtool disassociation can be
-undone, and failures after disassociation may still require administrator repair.
+undone, and failures after disassociation (including payload creation failures)
+may still require administrator repair. Preparing payloads earlier would be a
+separate reliability change, not part of this staging fix.
 Printer selection, DAF parsing/property generation, registry destinations,
 pairtool behavior, hive handling, and service behavior otherwise remain unchanged.
 
@@ -93,11 +99,14 @@ pwsh.exe -NoProfile -File .\Scripts\Tests\Convert-UpPrinterToPerUser.Staging.Tes
 
 The dependency-free checks extract production functions and the conversion loop.
 They mock registry commands, hive operations, the production staging-directory
-factory, and pairtool discovery. File reservation, writes, reads, serialization,
+factory, pairtool discovery, and the pairtool command. File reservation, writes, reads, serialization,
 collision handling, and cleanup use isolated, marked filesystem fixtures.
 Error cases run in separate processes with all three caller preferences, without
 an enclosing catch that could change production error semantics. Synthetic ACL
-cases exercise the fixed-parent policy. No printer, registry/hive, or service
+cases exercise the fixed-parent policy. Ordering checks verify disassociation
+precedes hive checks and payload generation, unavailable hives skip generation,
+and loaded hives are unloaded even on payload failure. Imported text is compared
+with the unchanged builder's output. No printer, registry/hive, or service
 mutation or elevation is performed.
 
 These checks do **not** establish a successful SYSTEM conversion, test

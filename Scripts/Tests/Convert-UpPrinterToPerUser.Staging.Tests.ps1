@@ -46,6 +46,7 @@ if ($Case) {
             switch ($args[0]) {
                 'query' { return }
                 'export' {
+                    Write-Host 'EXPORTED'
                     if ($Case -eq 'export-failure') {
                         [IO.File]::WriteAllText($args[2], 'partial')
                         $global:LASTEXITCODE = 1
@@ -65,21 +66,44 @@ if ($Case) {
                     $payload = [IO.File]::ReadAllText($args[1], [Text.Encoding]::Unicode)
                     if (-not $payload.StartsWith('Windows Registry Editor Version 5.00')) { throw 'Partial import' }
                     if ($payload -notmatch 'HKEY_USERS\\S-1-5-21-1-2-3-100[12]\\') { throw 'Wrong user destination' }
+                    if ($payload -cne $script:lastBuiltContent) { throw 'Imported payload differs from unchanged builder output' }
                     Write-Host 'IMPORTED'
                     return
                 }
                 default { throw "Unexpected reg command: $args" }
             }
         }
-        function Test-HiveLoaded { return $true }
-        function Mount-UserHive { throw 'Unexpected hive mutation' }
-        function Dismount-UserHive { throw 'Unexpected hive mutation' }
-        function Test-Path {
-            Write-Host 'DISASSOCIATION_REACHED'
-            return $false
+        $script:hiveLoaded = $false
+        function Test-HiveLoaded {
+            Write-Host 'HIVE_CHECKED'
+            if ($Case -eq 'hive-unavailable') { return $false }
+            if ($Case -in @('mounted-build-failure', 'mounted-success')) { return $script:hiveLoaded }
+            return $true
         }
-        if ($Case -in @('build-failure', 'driver-failure')) {
-            function Build-PerUserRegContent { Write-Error 'Injected preparation failure' }
+        function Mount-UserHive {
+            Write-Host 'HIVE_MOUNTED'
+            if ($Case -eq 'hive-unavailable') { return $false }
+            $script:hiveLoaded = $true
+            return $true
+        }
+        function Dismount-UserHive { Write-Host 'HIVE_DISMOUNTED' }
+        function Test-Path {
+            return $true
+        }
+        Set-Item -LiteralPath "Function:\$env:SystemRoot\System32\pairtool.exe" -Value {
+            Write-Host 'DISASSOCIATED'
+            $global:LASTEXITCODE = 0
+        }
+        $script:originalBuild = ${function:Build-PerUserRegContent}
+        function Build-PerUserRegContent {
+            param ($UserSID, $ShareId, $InstanceGuid, $TenantId, $PerSystem)
+            Write-Host 'BUILT'
+            if ($Case -in @('build-failure', 'driver-failure', 'mounted-build-failure')) {
+                Write-Error 'Injected preparation failure'
+                return
+            }
+            $script:lastBuiltContent = & $script:originalBuild @PSBoundParameters
+            return $script:lastBuiltContent
         }
         if ($Case -eq 'write-failure') {
             $script:writeCount = 0
@@ -100,7 +124,7 @@ if ($Case) {
             TenantId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
             TargetSIDs = @('S-1-5-21-1-2-3-1001', 'S-1-5-21-1-2-3-1002')
             Timestamp = 'test'
-            SkipDisassociate = ($Case -eq 'success')
+            SkipDisassociate = $false
         }
         if ($Case -eq 'driver-failure') {
             $shareIdsToConvert = @($share)
@@ -151,30 +175,54 @@ if ($Case) {
 $runtime = (Get-Process -Id $PID).Path
 $checks = 0
 foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
-    foreach ($caseValue in @('success', 'parent-failure', 'build-failure', 'write-failure',
+    foreach ($caseValue in @('success', 'mounted-success', 'hive-unavailable',
+        'parent-failure', 'build-failure', 'mounted-build-failure', 'write-failure',
         'read-failure', 'backup-collision', 'export-failure', 'driver-failure')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
-        $expectedPayloads = switch ($caseValue) { 'success' { 2 } 'write-failure' { 1 } default { 0 } }
+        $expectedPayloads = switch ($caseValue) { 'success' { 2 } 'mounted-success' { 2 } 'write-failure' { 1 } default { 0 } }
         if ($output -notmatch "PAYLOADS_REMAINING:$expectedPayloads") {
             throw "$caseValue/$preferenceValue retained unexpected payloads:`n$output"
         }
-        if ($output -match 'DISASSOCIATION_REACHED') { throw "$caseValue/$preferenceValue reached pairtool:`n$output" }
-        if ($caseValue -eq 'success') {
+        $postDisassociation = $caseValue -in @('success', 'mounted-success', 'hive-unavailable',
+            'build-failure', 'mounted-build-failure', 'write-failure', 'driver-failure')
+        if ($postDisassociation) {
+            if ($output -notmatch '(?s)EXPORTED.*DISASSOCIATED.*HIVE_CHECKED') {
+                throw "Baseline disassociate/hive ordering changed:`n$output"
+            }
+            if ($caseValue -ne 'hive-unavailable' -and
+                $output -notmatch '(?s)DISASSOCIATED.*HIVE_CHECKED.*BUILT') {
+                throw "Payload built before disassociation/hive availability:`n$output"
+            }
+        } elseif ($output -match 'DISASSOCIATED|HIVE_CHECKED|BUILT|IMPORTED') {
+            throw "Backup failure reached migration:`n$output"
+        }
+        if ($caseValue -in @('mounted-success', 'mounted-build-failure') -and
+            $output -notmatch '(?s)HIVE_MOUNTED.*BUILT.*HIVE_DISMOUNTED') {
+            throw "Owned hive was not unloaded:`n$output"
+        }
+        if ($caseValue -in @('success', 'mounted-success')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:2' -or $output -notmatch 'RETURNED:True') {
                 throw "Success case failed under ${preferenceValue}:`n$output"
+            }
+        } elseif ($caseValue -eq 'hive-unavailable') {
+            if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:0' -or
+                $output -notmatch 'RETURNED:True' -or $output -match 'BUILT|IMPORTED') {
+                throw "Unavailable hive did not skip payload generation:`n$output"
             }
         } elseif ($caseValue -eq 'export-failure') {
             if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:False' -or $output -notmatch 'BACKUPS_REMAINING:0') {
                 throw "Export failure handling failed:`n$output"
             }
         } elseif ($caseValue -eq 'driver-failure') {
-            if ($exitCode -ne 1 -or $output -match 'AFTER_DRIVER|IMPORTED|RETURNED:') {
+            if ($exitCode -ne 1 -or $output -match '(?m)^IMPORTED\r?$|AFTER_DRIVER|RETURNED:') {
                 throw "Production loop did not abort on preparation failure:`n$output"
             }
         } else {
-            if ($exitCode -ne 0 -or $output -match 'IMPORTED|RETURNED:True' -or
+            $expectedImports = if ($caseValue -eq 'write-failure') { 1 } else { 0 }
+            if ($exitCode -ne 0 -or ([regex]::Matches($output, 'IMPORTED')).Count -ne $expectedImports -or
+                $output -match 'RETURNED:True' -or
                 $output -notmatch 'RETURNED:False' -or $output -notmatch 'PREPARATION_FAILED:True' -or
                 $output -notmatch 'ERROR: Private') {
                 throw "$caseValue/$preferenceValue did not fail closed:`n$output"

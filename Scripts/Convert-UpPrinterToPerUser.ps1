@@ -634,7 +634,6 @@ function Convert-OnePrinter {
     }
 
     $stagingDir = $null
-    $payloads = @()
     $backupComplete = $false
     $backupReserved = $false
     try {
@@ -671,8 +670,8 @@ function Convert-OnePrinter {
         }
     }
 
-    # 3) Parse and prepare every payload before disassociation. Limit Stop to
-    # file preparation; preserve legacy native reg.exe stderr behavior.
+    # 3) Parse the private backup. Limit Stop to file preparation;
+    # preserve legacy native reg.exe stderr behavior.
     $savedPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Stop'
@@ -682,16 +681,8 @@ function Convert-OnePrinter {
             throw "No DAF properties parsed from $backupFile"
         }
         Write-Host "  Found $($perSystem.Count) properties."
-        foreach ($sid in $TargetSIDs) {
-            $instanceGuid = "{$([Guid]::NewGuid().ToString())}"
-            $regFile = [IO.Path]::Combine($stagingDir, "PerUser-$([Guid]::NewGuid().ToString('N')).reg")
-            $regContent = Build-PerUserRegContent -UserSID $sid -ShareId $ShareId `
-                -InstanceGuid $instanceGuid -TenantId $TenantId -PerSystem $perSystem
-            Write-NewStagingFile -Path $regFile -Content $regContent
-            $payloads += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile }
-        }
     } catch {
-        Write-Host "ERROR: Private payload preparation failed: $_" -ForegroundColor Red
+        Write-Host "ERROR: Private backup read failed: $_" -ForegroundColor Red
         return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "preparation: $_"; Installs = @(); PreparationFailed = $true }
     } finally { $ErrorActionPreference = $savedPreference }
 
@@ -727,8 +718,7 @@ function Convert-OnePrinter {
     # 5) For each user, write per-user DAF entry
     Write-Host "Step 4: Writing per-user DAF entries..." -ForegroundColor Cyan
     $installs = @()
-    foreach ($payload in $payloads) {
-        $sid = $payload.SID
+    foreach ($sid in $TargetSIDs) {
         Write-Host ""
         Write-Host "  User: $sid" -ForegroundColor White
         $weLoaded = $false
@@ -741,8 +731,22 @@ function Convert-OnePrinter {
                 }
             }
 
-            $instanceGuid = $payload.InstanceGuid
-            $regFile = $payload.RegFile
+            $savedPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Stop'
+                $instanceGuid = "{$([Guid]::NewGuid().ToString())}"
+                $regContent = Build-PerUserRegContent `
+                    -UserSID $sid `
+                    -ShareId $ShareId `
+                    -InstanceGuid $instanceGuid `
+                    -TenantId $TenantId `
+                    -PerSystem $perSystem
+                $regFile = [IO.Path]::Combine($stagingDir, "PerUser-$([Guid]::NewGuid().ToString('N')).reg")
+                Write-NewStagingFile -Path $regFile -Content $regContent
+            } catch {
+                Write-Host "ERROR: Private payload preparation failed for ${sid}: $_" -ForegroundColor Red
+                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "preparation: $_"; Backup = $backupFile; Installs = $installs; PreparationFailed = $true }
+            } finally { $ErrorActionPreference = $savedPreference }
             Write-Host "    Generated: $regFile" -ForegroundColor DarkGray
             Write-Host "    Instance GUID: $instanceGuid"
 
@@ -816,7 +820,7 @@ foreach ($sid in $shareIdsToConvert) {
                               -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
     $results += ,($r[-1])
     if ($r[-1].PreparationFailed) {
-        Write-Host "ERROR: Conversion stopped before disassociation/import for this printer. Complete private backups, if any, were retained." -ForegroundColor Red
+        Write-Host "ERROR: Conversion stopped; no incomplete payload was imported. Disassociation or earlier user imports may already have occurred. Complete private backups, if any, were retained." -ForegroundColor Red
         exit 1
     }
 }
