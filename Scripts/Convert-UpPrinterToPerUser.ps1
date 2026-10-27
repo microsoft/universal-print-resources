@@ -39,10 +39,6 @@ param (
     [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Only target these user SIDs. Omit to target all real users with profiles.")]
     [string[]]$UserSIDs,
 
-    [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Directory for backup .reg files. Defaults to %TEMP%\UPConvert.")]
-    [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Directory for backup .reg files. Defaults to %TEMP%\UPConvert.")]
-    [string]$BackupDir = "$env:TEMP\UPConvert",
-
     [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Dry run. Read state, plan changes, and print what WOULD be done. Make no changes.")]
     [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Dry run. Read state, plan changes, and print what WOULD be done. Make no changes.")]
     [switch]$WhatIfMode,
@@ -149,11 +145,120 @@ if (-not $WhatIfMode) {
     }
 }
 
-if (-not (Test-Path $BackupDir)) {
-    New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+# --- Helpers (hive load/unload, copied/adapted from upcleanup.ps1) ------------
+
+function Assert-ProtectedStagingParent {
+    param ([string]$Path)
+
+    # Check top-down, including the volume root. Names alone do not establish trust.
+    # Administrators, SYSTEM and TrustedInstaller are outside the threat model.
+    $trusted = @('S-1-5-18', 'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $directory = [IO.DirectoryInfo]::new($Path)
+    $chain = @()
+    while ($null -ne $directory) {
+        $chain = @($directory.FullName) + $chain
+        $directory = $directory.Parent
+    }
+    foreach ($ancestor in $chain) {
+        $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Staging ancestor is not an ordinary directory: $ancestor"
+        }
+        $acl = Get-Acl -LiteralPath $ancestor -ErrorAction Stop
+        $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
+            $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All))
+        if ($null -eq $descriptor.DiscretionaryAcl) {
+            throw "Missing staging ancestor DACL: $ancestor"
+        }
+        if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) {
+            throw "Untrusted staging ancestor owner: $ancestor"
+        }
+        if (-not $acl.AreAccessRulesCanonical) {
+            throw "Noncanonical staging ancestor ACL: $ancestor"
+        }
+        # Ignore inherit-only ACEs. Reject dangerous allows even if a deny might
+        # cancel them. CreateDirectories alone cannot replace an existing child.
+        $unsafeRights = [Security.AccessControl.FileSystemRights]::WriteData -bor
+            [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+            [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+            [Security.AccessControl.FileSystemRights]::Delete -bor
+            [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+            [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+            [Security.AccessControl.FileSystemRights]::TakeOwnership -bor 0x10000000 -bor 0x40000000
+        if ($ancestor -eq $Path) {
+            $unsafeRights = $unsafeRights -bor [Security.AccessControl.FileSystemRights]::CreateDirectories
+        }
+        $unsafeRights = [int]$unsafeRights
+        foreach ($ace in $descriptor.DiscretionaryAcl) {
+            if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback) {
+                throw "Unsupported staging ancestor ACE: $ancestor"
+            }
+            if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
+                -not ([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -and
+                $ace.SecurityIdentifier.Value -notin $trusted -and
+                ($ace.AccessMask -band $unsafeRights)) {
+                throw "Untrusted write access to staging ancestor: $ancestor"
+            }
+        }
+    }
 }
 
-# --- Helpers (hive load/unload, copied/adapted from upcleanup.ps1) ------------
+function New-PrivateStagingDirectory {
+    try {
+        $parent = [IO.Path]::Combine([Environment]::SystemDirectory, 'config')
+        Assert-ProtectedStagingParent -Path $parent
+        $path = [IO.Path]::Combine($parent, "UPConvert-$([Guid]::NewGuid().ToString('N'))")
+        if ([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) {
+            throw "Staging directory collision: $path"
+        }
+        $security = [Security.AccessControl.DirectorySecurity]::new()
+        $security.SetAccessRuleProtection($true, $false)
+        $security.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-18'))
+        foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new($sid),
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow)
+            $security.AddAccessRule($rule)
+        }
+        # Both APIs supply the DACL to directory creation, not after creation.
+        # The checked parent cannot be modified by a low-privileged process.
+        if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            $null = [IO.Directory]::CreateDirectory($path, $security)
+        } else {
+            [IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($path), $security)
+        }
+        return $path
+    } catch { throw }
+}
+
+function Write-NewStagingFile {
+    param ([string]$Path, [string]$Content = '')
+    $stream = $null
+    $writer = $null
+    try {
+        try {
+            $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $writer = [IO.StreamWriter]::new($stream, [Text.UnicodeEncoding]::new($false, $true))
+            $writer.NewLine = "`r`n"
+            $writer.Write($Content)
+        }
+        finally {
+            if ($null -ne $writer) { $writer.Dispose() }
+            elseif ($null -ne $stream) { $stream.Dispose() }
+        }
+    } catch {
+        if ($null -ne $stream) {
+            try { [IO.File]::Delete($Path) }
+            catch { Write-Warning "Could not remove partial private file '$Path': $_" -WarningAction Continue }
+        }
+        throw
+    }
+}
 
 function Get-AllRealUserSIDs {
     # User profiles from ProfileList: S-1-5-21-* (domain/local) and S-1-12-1-* (Entra/AAD).
@@ -511,7 +616,6 @@ function Convert-OnePrinter {
         [Parameter(Mandatory = $true)][string]$TenantId,
         [Parameter(Mandatory = $true)][string[]]$TargetSIDs,
         [Parameter(Mandatory = $true)][string]$Timestamp,
-        [Parameter(Mandatory = $true)][string]$BackupDir,
         [switch]$WhatIfMode,
         [switch]$SkipDisassociate
     )
@@ -526,27 +630,70 @@ function Convert-OnePrinter {
     $null = reg query $regPerSysKey 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Per-system DAF entry not found: $regPerSysKey" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'no DAF entry'; Installs = @() }
+        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'no DAF entry'; Installs = @(); PreparationFailed = $false }
     }
 
-    # 2) Backup per-system entry
-    $backupFile = Join-Path $BackupDir "PerSystem-MCP-$ShareId-$Timestamp.reg"
-    Write-Host "Step 1: Exporting per-system DAF entry to backup..." -ForegroundColor Cyan
-    Write-Host "  $backupFile"
-    $null = reg export $regPerSysKey $backupFile /y 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: reg export failed for $regPerSysKey" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'export failed'; Installs = @() }
+    $stagingDir = $null
+    $payloads = @()
+    $backupComplete = $false
+    $backupReserved = $false
+    try {
+        # 2) Reserve an exclusive file before exporting; /y only replaces our file.
+        $savedPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Stop'
+            $stagingDir = New-PrivateStagingDirectory
+            Write-Host "  Private staging and backups: $stagingDir"
+            $backupFile = [IO.Path]::Combine($stagingDir, "PerSystem-MCP-$ShareId-$Timestamp.reg")
+            Write-NewStagingFile -Path $backupFile
+            $backupReserved = $true
+        } catch {
+            Write-Host "ERROR: Private staging preparation failed: $_" -ForegroundColor Red
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "staging: $_"; Installs = @(); PreparationFailed = $true }
+        } finally { $ErrorActionPreference = $savedPreference }
+        Write-Host "Step 1: Exporting per-system DAF entry to backup..." -ForegroundColor Cyan
+        Write-Host "  $backupFile"
+        $null = reg export $regPerSysKey $backupFile /y 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: reg export failed for $regPerSysKey" -ForegroundColor Red
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'export failed'; Installs = @(); PreparationFailed = $true }
+        }
+        $backupComplete = $true
+    }
+    finally {
+        # Keep complete exports and payloads as private backups; remove only
+        # incomplete output that this invocation created.
+        if ($stagingDir -and -not $backupComplete) {
+            try {
+                if ($backupReserved) { [IO.File]::Delete($backupFile) }
+                [IO.Directory]::Delete($stagingDir, $false)
+            } catch { Write-Warning "Could not remove incomplete staging '$stagingDir': $_" -WarningAction Continue }
+        }
     }
 
-    # 3) Parse per-system properties
-    Write-Host "Step 2: Parsing per-system DAF properties..." -ForegroundColor Cyan
-    $perSystem = Read-DafExport -RegFilePath $backupFile -AnchorMcpKey "MCP#$ShareId"
-    if ($perSystem.Count -eq 0) {
-        Write-Host "ERROR: No DAF properties parsed from $backupFile" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'parse failed'; Installs = @() }
-    }
-    Write-Host "  Found $($perSystem.Count) properties."
+    # 3) Parse and prepare every payload before disassociation. Limit Stop to
+    # file preparation; preserve legacy native reg.exe stderr behavior.
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Stop'
+        Write-Host "Step 2: Parsing per-system DAF properties..." -ForegroundColor Cyan
+        $perSystem = Read-DafExport -RegFilePath $backupFile -AnchorMcpKey "MCP#$ShareId"
+        if ($perSystem.Count -eq 0) {
+            throw "No DAF properties parsed from $backupFile"
+        }
+        Write-Host "  Found $($perSystem.Count) properties."
+        foreach ($sid in $TargetSIDs) {
+            $instanceGuid = "{$([Guid]::NewGuid().ToString())}"
+            $regFile = [IO.Path]::Combine($stagingDir, "PerUser-$([Guid]::NewGuid().ToString('N')).reg")
+            $regContent = Build-PerUserRegContent -UserSID $sid -ShareId $ShareId `
+                -InstanceGuid $instanceGuid -TenantId $TenantId -PerSystem $perSystem
+            Write-NewStagingFile -Path $regFile -Content $regContent
+            $payloads += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile }
+        }
+    } catch {
+        Write-Host "ERROR: Private payload preparation failed: $_" -ForegroundColor Red
+        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "preparation: $_"; Installs = @(); PreparationFailed = $true }
+    } finally { $ErrorActionPreference = $savedPreference }
 
     # 4) Disassociate per-system AEP via pairtool
     if (-not $SkipDisassociate) {
@@ -580,7 +727,8 @@ function Convert-OnePrinter {
     # 5) For each user, write per-user DAF entry
     Write-Host "Step 4: Writing per-user DAF entries..." -ForegroundColor Cyan
     $installs = @()
-    foreach ($sid in $TargetSIDs) {
+    foreach ($payload in $payloads) {
+        $sid = $payload.SID
         Write-Host ""
         Write-Host "  User: $sid" -ForegroundColor White
         $weLoaded = $false
@@ -593,19 +741,8 @@ function Convert-OnePrinter {
                 }
             }
 
-            $instanceGuid = "{$([Guid]::NewGuid().ToString())}"
-            $regContent = Build-PerUserRegContent `
-                -UserSID $sid `
-                -ShareId $ShareId `
-                -InstanceGuid $instanceGuid `
-                -TenantId $TenantId `
-                -PerSystem $perSystem
-
-            $regFile = Join-Path $BackupDir "PerUser-$sid-MCP-$ShareId-$Timestamp.reg"
-            $writer = [IO.StreamWriter]::new($regFile, $false, [Text.UnicodeEncoding]::new($false, $true))
-            $writer.NewLine = "`r`n"
-            $writer.Write($regContent)
-            $writer.Dispose()
+            $instanceGuid = $payload.InstanceGuid
+            $regFile = $payload.RegFile
             Write-Host "    Generated: $regFile" -ForegroundColor DarkGray
             Write-Host "    Instance GUID: $instanceGuid"
 
@@ -626,7 +763,7 @@ function Convert-OnePrinter {
         }
     }
 
-    return [pscustomobject]@{ ShareId = $ShareId; Success = $true; Backup = $backupFile; Installs = $installs }
+    return [pscustomobject]@{ ShareId = $ShareId; Success = $true; Backup = $backupFile; Installs = $installs; PreparationFailed = $false }
 }
 
 # --- Resolve ShareIds to convert ---------------------------------------------
@@ -640,7 +777,7 @@ if ($PSCmdlet.ParameterSetName -eq 'ConvertAll') {
 Write-Host "=== Convert per-system UP printer(s) to per-user ===" -ForegroundColor Cyan
 Write-Host "  Mode           : $($PSCmdlet.ParameterSetName)$(if ($WhatIfMode) { ' (WHATIF)' } else { '' })"
 Write-Host "  TenantId param : $TenantId"
-Write-Host "  Backup dir     : $BackupDir"
+Write-Host "  Backups        : private per-printer Windows system directory"
 Write-Host "  ShareId(s)     : $($shareIdsToConvert.Count) printer(s)"
 foreach ($s in $shareIdsToConvert) { Write-Host "    $s" -ForegroundColor DarkGray }
 Write-Host ""
@@ -675,9 +812,13 @@ foreach ($sid in $shareIdsToConvert) {
     # Force scalar capture: if Convert-OnePrinter ever leaks stdout, $r could become an array.
     # Wrap with @(...) and grab the last element (the [pscustomobject] result we explicitly return).
     $r = @(Convert-OnePrinter -ShareId $sid -TenantId $TenantId -TargetSIDs $targetSIDs `
-                              -Timestamp $timestamp -BackupDir $BackupDir `
+                              -Timestamp $timestamp `
                               -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
     $results += ,($r[-1])
+    if ($r[-1].PreparationFailed) {
+        Write-Host "ERROR: Conversion stopped before disassociation/import for this printer. Complete private backups, if any, were retained." -ForegroundColor Red
+        exit 1
+    }
 }
 
 # --- Restart services (once) -------------------------------------------------
