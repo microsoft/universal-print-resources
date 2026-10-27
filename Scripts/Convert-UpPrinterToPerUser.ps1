@@ -147,67 +147,43 @@ if (-not $WhatIfMode) {
 
 # --- Helpers (hive load/unload, copied/adapted from upcleanup.ps1) ------------
 
-function Assert-ProtectedStagingParent {
+function Assert-SystemTempParent {
     param ([string]$Path)
 
-    # Check top-down, including the volume root. Names alone do not establish trust.
-    # Administrators, SYSTEM and TrustedInstaller are outside the threat model.
+    # Supported environment: Windows/volume ancestry is OS-protected against
+    # low-privileged replacement/redirection. Validate SystemTemp itself strictly.
     $trusted = @('S-1-5-18', 'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
-    $directory = [IO.DirectoryInfo]::new($Path)
-    $chain = @()
-    while ($null -ne $directory) {
-        $chain = @($directory.FullName) + $chain
-        $directory = $directory.Parent
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "SystemTemp must be an existing ordinary directory: $Path"
     }
-    foreach ($ancestor in $chain) {
-        $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
-        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw "Staging ancestor is not an ordinary directory: $ancestor"
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
+        $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All))
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted -or
+        $null -eq $descriptor.DiscretionaryAcl -or -not $acl.AreAccessRulesCanonical) {
+        throw "SystemTemp requires a trusted owner and canonical, non-null DACL: $Path"
+    }
+    foreach ($ace in $descriptor.DiscretionaryAcl) {
+        if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback) {
+            throw "Unsupported SystemTemp ACE: $Path"
         }
-        $acl = Get-Acl -LiteralPath $ancestor -ErrorAction Stop
-        $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
-            $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All))
-        if ($null -eq $descriptor.DiscretionaryAcl) {
-            throw "Missing staging ancestor DACL: $ancestor"
-        }
-        if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) {
-            throw "Untrusted staging ancestor owner: $ancestor"
-        }
-        if (-not $acl.AreAccessRulesCanonical) {
-            throw "Noncanonical staging ancestor ACL: $ancestor"
-        }
-        # Ignore inherit-only ACEs. Reject dangerous allows even if a deny might
-        # cancel them. CreateDirectories alone cannot replace an existing child.
-        $unsafeRights = [Security.AccessControl.FileSystemRights]::WriteData -bor
-            [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
-            [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
-            [Security.AccessControl.FileSystemRights]::Delete -bor
-            [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-            [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-            [Security.AccessControl.FileSystemRights]::TakeOwnership -bor 0x10000000 -bor 0x40000000
-        if ($ancestor -eq $Path) {
-            $unsafeRights = $unsafeRights -bor [Security.AccessControl.FileSystemRights]::CreateDirectories
-        }
-        $unsafeRights = [int]$unsafeRights
-        foreach ($ace in $descriptor.DiscretionaryAcl) {
-            if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback) {
-                throw "Unsupported staging ancestor ACE: $ancestor"
-            }
-            if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
-                -not ([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -and
-                $ace.SecurityIdentifier.Value -notin $trusted -and
-                ($ace.AccessMask -band $unsafeRights)) {
-                throw "Untrusted write access to staging ancestor: $ancestor"
-            }
+        # Deliberately reject all other allow ACEs, even read-only/inherit-only
+        # or deny-masked grants. This is a fixed-parent policy, not ACL evaluation.
+        if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
+            $ace.SecurityIdentifier.Value -notin $trusted) {
+            throw "SystemTemp permits a principal outside SYSTEM/Administrators/TrustedInstaller: $Path"
         }
     }
 }
 
 function New-PrivateStagingDirectory {
     try {
-        $parent = [IO.Path]::Combine([Environment]::SystemDirectory, 'config')
-        Assert-ProtectedStagingParent -Path $parent
+        $windows = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+        if (-not $windows) { throw 'Cannot locate the Windows directory for fixed SystemTemp staging.' }
+        $parent = [IO.Path]::Combine($windows, 'SystemTemp')
+        Assert-SystemTempParent -Path $parent
         $path = [IO.Path]::Combine($parent, "UPConvert-$([Guid]::NewGuid().ToString('N'))")
         if ([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) {
             throw "Staging directory collision: $path"
@@ -225,7 +201,7 @@ function New-PrivateStagingDirectory {
             $security.AddAccessRule($rule)
         }
         # Both APIs supply the DACL to directory creation, not after creation.
-        # The checked parent cannot be modified by a low-privileged process.
+        # The checked parent and prerequisite OS ancestry prevent low-privileged replacement.
         if ($PSVersionTable.PSEdition -eq 'Desktop') {
             $null = [IO.Directory]::CreateDirectory($path, $security)
         } else {

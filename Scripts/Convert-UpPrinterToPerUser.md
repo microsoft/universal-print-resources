@@ -22,28 +22,45 @@ It is not a read-only inspection mode.
 **The `-BackupDir` parameter has been removed intentionally.** Do not pass it in
 deployment commands. There is no custom staging/output directory and no TEMP
 fallback. Each printer gets a fresh `UPConvert-<random-guid>` directory beneath
-the running Windows system directory's `config` directory (normally
-`C:\Windows\System32\config`). The script prints the exact path before exporting.
+the existing Windows `SystemTemp` directory (normally `C:\Windows\SystemTemp`).
+The Windows directory comes from the managed Windows special-folder API, not an
+assumed drive or an environment-variable override. The script does not use
+`TEMP`, `TMP`, `SystemTemp` environment variables, `GetTempPath`, or `GetTempPath2`.
+The script prints the exact private run path before exporting.
 
 The directory is created with inheritance disabled and a SYSTEM-owned DACL
 granting full control only to SYSTEM and built-in Administrators. The DACL is
 supplied **during creation**, using managed Windows APIs available in each
 PowerShell edition; no `Add-Type` compilation or compiler TEMP files are needed.
 
-The security boundary is against low-privileged local users, not administrators,
-SYSTEM, or TrustedInstaller. Before creating the directory, the script checks
-every existing ancestor, top-down from the volume root. It rejects reparse
-points, untrusted owners, missing/noncanonical DACLs, unsupported ACEs, and
-untrusted allow ACEs granting replacement, reparse-relevant writes, or ACL/owner
-changes. Inherit-only ACEs do not apply to the ancestor itself. Create-subdirectory
-permission alone is allowed on higher ancestors, but **not** on the staging
-parent. Dangerous allows are rejected even if a deny could cancel them. This is
-a deliberately conservative policy for a fixed Windows location, not a general
-ACL effective-access evaluator. Unusual system ACLs may cause a safe refusal.
-The directory name/profile location alone is not treated as proof of trust.
+**Supported-environment prerequisite:** the Windows directory and its volume
+ancestors must already be protected by the operating system from low-privileged
+replacement or reparse redirection. This script does **not** inspect or repair
+that ancestry. This explicit prerequisite replaces the previous generic
+ancestor-validation framework; it is not a claim that the folder name proves
+the entire path safe. Administrators must establish this prerequisite before
+deployment. Administrators, SYSTEM, and TrustedInstaller are outside the threat
+model.
 
-With that ancestry protected, a low-privileged process cannot replace an
-ancestor, redirect the path, or precreate/replace files between closing the
+The script validates **SystemTemp itself** before creating a child: it must
+exist, be an ordinary non-reparse directory, have a SYSTEM/Administrators/
+TrustedInstaller owner and a canonical, non-null DACL. Only ordinary,
+non-callback ACEs are supported; every allow ACE must name one of those three
+trusted principals. Other grants are rejected even if read-only, inherit-only,
+or masked by denies. This strict policy does not attempt effective-access
+evaluation or determine whether a named account is currently an administrator.
+An extra user-specific FullControl grant is therefore a policy rejection,
+not by itself evidence of a low-privileged exploit.
+
+Missing, inaccessible, or policy-rejected SystemTemp causes a clear failure
+before disassociation. The script neither provisions/repairs the parent nor
+falls back elsewhere. Windows' [GetTempPath2 documentation](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppath2w)
+describes protected SystemTemp defaults, but also warns that the API does not
+validate existence/access and preserves symbolic links. Defaults alone are
+not relied upon here.
+
+Under the ancestry prerequisite and checked-parent policy, a low-privileged
+process cannot redirect the private paths or replace files between closing the
 writer and `reg.exe` reopening them. Directory name collisions are rejected
 before creation in the checked parent; individual files use exclusive
 `CreateNew` reservation. `reg export /y` replaces only the reserved private
@@ -69,7 +86,10 @@ replacing the original failure. Per-user filenames use random identifiers;
 the conversion output associates each imported file with its SID and instance
 GUID. Backups can contain sensitive printer configuration: retain their private
 ACLs, apply your organization's retention policy, and remove only the specific
-run directories when no longer needed. Do not automatically import copied or
+run directories when no longer needed. These are retained **temporary**
+backups, not durable archival storage: OS cleanup, maintenance tools, or an
+administrator may remove them. Arrange trusted archival storage separately if
+required; the script adds no output-copy step. Do not automatically import copied or
 user-editable backup files as SYSTEM.
 
 This is not transactional migration or complete recovery tooling. An exported
@@ -111,6 +131,7 @@ mutation or elevation is performed.
 
 These checks do **not** establish a successful SYSTEM conversion, test
 cross-token attacks on an actual production run directory, or exercise the
-production SYSTEM-owned directory creation in the Windows config directory.
+production SYSTEM-owned directory creation in Windows SystemTemp. The ancestry
+prerequisite is a deployment responsibility, not covered by these checks.
 Those require a separately authorized disposable Windows environment; results
 from other branches are not evidence for this revision.

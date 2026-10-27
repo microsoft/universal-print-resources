@@ -245,39 +245,23 @@ function Get-Acl { return $script:testAcl }
 function Get-Item {
     return [pscustomobject]@{ PSIsContainer = $true; Attributes = [IO.FileAttributes]::Directory }
 }
-Assert-ProtectedStagingParent -Path ([Environment]::SystemDirectory)
-$script:rootAcl = [Security.AccessControl.DirectorySecurity]::new()
-$script:rootAcl.SetSecurityDescriptorSddlForm(
-    'O:SYG:SYD:PAI(A;;FA;;;SY)(A;;0x4;;;BU)(A;OICIIO;GA;;;BU)')
-$script:testAcl.SetSecurityDescriptorSddlForm(
-    'O:SYG:SYD:PAI(A;;FA;;;SY)(A;;FRFX;;;BU)(A;OICIIO;GA;;;BU)')
-function Get-Acl {
-    param ([string]$LiteralPath)
-    if ($LiteralPath -eq [IO.Path]::GetPathRoot([Environment]::SystemDirectory)) { return $script:rootAcl }
-    return $script:testAcl
-}
-Assert-ProtectedStagingParent -Path ([Environment]::SystemDirectory)
+$systemTemp = [IO.Path]::Combine(
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows), 'SystemTemp')
+Assert-SystemTempParent -Path $systemTemp
 $checks++
-function Get-Acl { return $script:testAcl }
 foreach ($sddl in @(
-    'O:SYG:SYD:PAI(A;;0x2;;;BU)',
-    'O:SYG:SYD:PAI(A;;0x4;;;BU)',
-    'O:SYG:SYD:PAI(A;;0x40;;;BU)',
-    'O:SYG:SYD:PAI(A;;0x10000;;;BU)',
-    'O:SYG:SYD:PAI(A;;0x40000;;;BU)',
-    'O:SYG:SYD:PAI(A;;0x80000;;;BU)',
-    'O:SYG:SYD:PAI(A;;0x100;;;BU)',
-    'O:SYG:SYD:PAI(A;;GW;;;BU)',
     'O:SYG:SYD:PAI(A;;GA;;;BU)',
+    'O:SYG:SYD:PAI(A;;FRFX;;;BU)',
+    'O:SYG:SYD:PAI(A;OICIIO;GA;;;BU)',
     'O:BUG:SYD:PAI(A;;FA;;;SY)',
     'O:SYG:SYD:NO_ACCESS_CONTROL'
 )) {
     $script:testAcl = [Security.AccessControl.DirectorySecurity]::new()
     $script:testAcl.SetSecurityDescriptorSddlForm($sddl)
     $rejected = $false
-    try { Assert-ProtectedStagingParent -Path ([Environment]::SystemDirectory) }
+    try { Assert-SystemTempParent -Path $systemTemp }
     catch { $rejected = $true }
-    if (-not $rejected) { throw "Unsafe ancestor accepted: $sddl" }
+    if (-not $rejected) { throw "Unsupported SystemTemp ACL accepted: $sddl" }
     $checks++
 }
 $script:testAcl.SetSecurityDescriptorSddlForm('O:SYG:SYD:PAI(A;;FA;;;SY)')
@@ -285,8 +269,22 @@ function Get-Item {
     return [pscustomobject]@{ PSIsContainer = $true; Attributes = [IO.FileAttributes]::ReparsePoint }
 }
 $rejected = $false
-try { Assert-ProtectedStagingParent -Path ([Environment]::SystemDirectory) }
+try { Assert-SystemTempParent -Path $systemTemp }
 catch { $rejected = $true }
-if (-not $rejected) { throw 'Reparse ancestor accepted' }
+if (-not $rejected) { throw 'Reparse SystemTemp accepted' }
+$checks++
+function Get-Item {
+    return [pscustomobject]@{ PSIsContainer = $false; Attributes = [IO.FileAttributes]::Normal }
+}
+$rejected = $false
+try { Assert-SystemTempParent -Path $systemTemp }
+catch { $rejected = $true }
+if (-not $rejected) { throw 'Nondirectory SystemTemp accepted' }
+$checks++
+function Get-Item { Write-Error 'SystemTemp does not exist' }
+$rejected = $false
+try { Assert-SystemTempParent -Path $systemTemp }
+catch { $rejected = $true }
+if (-not $rejected) { throw 'Missing SystemTemp accepted' }
 $checks++
 Write-Host "Passed $checks focused staging checks on PowerShell $($PSVersionTable.PSVersion)."
