@@ -1,19 +1,76 @@
-# Convert per-system Universal Print printer(s) to per-user installs for all real users,
-# or detect per-system UP printers (no elevation required).
-#
-# Modes:
-#   -Detect          Checks for legacy per-system UP printers (no elevation, no SYSTEM, no ShareId/TenantId).
-#                    Exit 0 = found, Exit 1 = none found.
-#
-#   -AllUPPrinters   Converts every per-system UP printer found in the DAF store. Run as SYSTEM.
-#
-#   (default)        Converts a single per-system printer (-ShareId) to per-user installs. Run as SYSTEM.
-#     1. Backs up the per-system DAF entry for MCP#<ShareId> to a .reg file.
-#     2. Reads the per-system properties (capabilities, tenant, audience, URL, display name, etc.).
-#     3. Disassociates the per-system AEP via pairtool (running as SYSTEM).
-#     4. For each real user on the box (loading logged-off hives as needed), writes per-user DAF
-#        entries with a freshly-generated instance GUID for each install.
-#     5. Restarts DeviceAssociationService and Spooler (once, after all printers are processed).
+<#
+.SYNOPSIS
+Detect or migrate legacy per-system Universal Print printers to per-user installs.
+.DESCRIPTION
+Detection requires no elevation. Conversion requires NT AUTHORITY\SYSTEM on
+Windows PowerShell 5.1 or PowerShell 7. From an administrator prompt, use your
+approved Sysinternals PsExec installation: psexec.exe -s -i powershell.exe
+Then run this script in that SYSTEM prompt (or use pwsh.exe for PowerShell 7).
+
+For each printer, export/read its DAF backup and prepare all requested users'
+unchanged registry payloads before pairtool disassociation. If a payload cannot
+be prepared, leave that system printer in place. Then check/load user hives
+and import prepared payloads, skipping unavailable hives with a reported failure.
+Report per-user failures, finish other users/printers, and restart
+DeviceAssociationService and Spooler once unless explicitly skipped.
+
+This is not transactional: actual disassociation, hive reloading, or imports can
+still fail after changes begin. Failed imports may themselves be partial.
+Inspect the printed per-user outcomes and backup paths; registry export alone
+does not undo disassociation. Conversion exits 1 on reported failures, 0 otherwise.
+.PARAMETER Detect
+Only detect per-system UP printers. Exit 0 = found; exit 1 = none found.
+.PARAMETER ShareId
+Share GUID of the single per-system printer to convert.
+.PARAMETER AllUPPrinters
+Convert all per-system UP printers found in the DAF store.
+.PARAMETER TenantId
+Tenant GUID written to each user's DAF entry.
+.PARAMETER UserSIDs
+Restrict conversion to these profiles; otherwise target all real user profiles.
+.PARAMETER WhatIfMode
+Export backups, prepare files, and check/load/unload hives, but do not
+disassociate, import, or restart services. Requires protected staging access;
+this is not a read-only inspection mode.
+.PARAMETER SkipDisassociate
+Skip pairtool, for example when the per-system AEP is already gone.
+.PARAMETER SkipRestart
+Leave final service restarts to the operator.
+.EXAMPLE
+.\Convert-UpPrinterToPerUser.ps1 -Detect
+.EXAMPLE
+.\Convert-UpPrinterToPerUser.ps1 -ShareId '<share-guid>' -TenantId '<tenant-guid>'
+.EXAMPLE
+.\Convert-UpPrinterToPerUser.ps1 -AllUPPrinters -TenantId '<tenant-guid>' -WhatIfMode
+.NOTES
+BackupDir was removed. Staging is a fresh private child of the existing Windows
+SystemTemp directory, derived from the OS Windows special folder, not TEMP/TMP
+or SystemTemp environment overrides. Missing/unsafe SystemTemp fails closed:
+no provisioning, ACL repair, or fallback. Only SYSTEM/Administrators/
+TrustedInstaller owners and allow principals are supported on the parent.
+
+Supported-environment prerequisite: Windows and its volume ancestry must be
+OS-protected against low-privileged write/delete-child/ACL/reparse control.
+This script validates SystemTemp itself, not that ancestry. This is a deployment
+requirement, not immunity on arbitrarily misconfigured machines.
+
+Complete files remain in the printed SYSTEM/Admins-only run directory.
+These are sensitive temporary backups, not durable archives; OS cleanup or
+maintenance may remove them. Arrange trusted archival storage separately.
+Remove specific run directories when no longer needed. Never automatically
+import user-editable backup copies as SYSTEM.
+
+Windows PowerShell 5.1 can turn redirected native stderr into NativeCommandError.
+With caller ErrorActionPreference=Stop this may interrupt exit-code handling
+even when the native command exits 0. File-only Stop scopes do not fix that
+legacy behavior and do not impose it globally on reg.exe/pairtool/hive commands.
+Unexpected errors outside import handling can still interrupt processing;
+requested service restarts are attempted in finally, not a recovery transaction.
+
+Editing invalidates the historical Authenticode block. Obtain an authorized new
+signature and verify with Get-AuthenticodeSignature before signed-policy deployment.
+Safe regression checks: Scripts\Tests\Convert-UpPrinterToPerUser.Staging.Tests.ps1.
+#>
 
 [CmdletBinding(DefaultParameterSetName = 'ConvertOne')]
 param (
@@ -39,8 +96,8 @@ param (
     [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Only target these user SIDs. Omit to target all real users with profiles.")]
     [string[]]$UserSIDs,
 
-    [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Dry run. Read state, plan changes, and print what WOULD be done. Make no changes.")]
-    [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Dry run. Read state, plan changes, and print what WOULD be done. Make no changes.")]
+    [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Prepare files and check hives, but do not disassociate, import, or restart services.")]
+    [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Prepare files and check hives, but do not disassociate, import, or restart services.")]
     [switch]$WhatIfMode,
 
     [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Skip the pairtool disassociation step (e.g., if the per-system AEP is already gone).")]
@@ -617,7 +674,7 @@ function Convert-OnePrinter {
     $null = reg query $regPerSysKey 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Per-system DAF entry not found: $regPerSysKey" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'no DAF entry'; Installs = @(); PreparationFailed = $false }
+        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'no DAF entry'; Backup = $null; Installs = @(); PreparationFailed = $false }
     }
 
     $stagingDir = $null
@@ -635,14 +692,14 @@ function Convert-OnePrinter {
             $backupReserved = $true
         } catch {
             Write-Host "ERROR: Private staging preparation failed: $_" -ForegroundColor Red
-            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "staging: $_"; Installs = @(); PreparationFailed = $true }
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "staging: $_"; Backup = $null; Installs = @(); PreparationFailed = $true }
         } finally { $ErrorActionPreference = $savedPreference }
         Write-Host "Step 1: Exporting per-system DAF entry to backup..." -ForegroundColor Cyan
         Write-Host "  $backupFile"
         $null = reg export $regPerSysKey $backupFile /y 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Host "ERROR: reg export failed for $regPerSysKey" -ForegroundColor Red
-            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'export failed'; Installs = @(); PreparationFailed = $true }
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'export failed'; Backup = $null; Installs = @(); PreparationFailed = $true }
         }
         $backupComplete = $true
     }
@@ -658,7 +715,9 @@ function Convert-OnePrinter {
     }
 
     # 3) Reread only the private export, never a user-selectable backup path.
-    # Limit Stop to file preparation; preserve legacy native reg.exe stderr behavior.
+    # Stop is file-scoped: in WinPS 5.1 redirected native stderr can become
+    # NativeCommandError under caller Stop before LASTEXITCODE is inspected,
+    # even for exit 0. Do not impose that preference on native/hive operations.
     $savedPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Stop'
@@ -670,16 +729,42 @@ function Convert-OnePrinter {
         Write-Host "  Found $($perSystem.Count) properties."
     } catch {
         Write-Host "ERROR: Private backup read failed: $_" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "preparation: $_"; Installs = @(); PreparationFailed = $true }
+        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "preparation: $_"; Backup = $backupFile; Installs = @(); PreparationFailed = $true }
     } finally { $ErrorActionPreference = $savedPreference }
 
-    # 4) Disassociate per-system AEP via pairtool
+    # 4) Finish every payload write before disassociation. Keep hive availability
+    # checks in the install phase; this does not add a second hive-load cycle.
+    $payloads = @()
+    foreach ($sid in $TargetSIDs) {
+        $savedPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Stop'
+            $instanceGuid = "{$([Guid]::NewGuid().ToString())}"
+            $regContent = Build-PerUserRegContent `
+                -UserSID $sid `
+                -ShareId $ShareId `
+                -InstanceGuid $instanceGuid `
+                -TenantId $TenantId `
+                -PerSystem $perSystem
+            $regFile = [IO.Path]::Combine($stagingDir, "PerUser-$([Guid]::NewGuid().ToString('N')).reg")
+            Write-NewStagingFile -Path $regFile -Content $regContent
+            $payloads += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile }
+            Write-Host "  Prepared for ${sid}: $regFile" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "ERROR: Private payload preparation failed for ${sid}: $_. System printer unchanged. Backup: $backupFile" -ForegroundColor Red
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "preparation for ${sid}: $_"; Backup = $backupFile; Installs = @(); PreparationFailed = $true }
+        } finally { $ErrorActionPreference = $savedPreference }
+    }
+
+    # 5) Disassociate only after preflight; actual native failures are not a
+    # transaction. Keep processing, but never report those outcomes as success.
+    $errors = @()
     if (-not $SkipDisassociate) {
         Write-Host "Step 3: Disassociating per-system AEP via pairtool..." -ForegroundColor Cyan
         $pairtool = "$env:SystemRoot\System32\pairtool.exe"
         if (-not (Test-Path $pairtool)) {
             Write-Host "ERROR: pairtool.exe not found at $pairtool." -ForegroundColor Red
-            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'pairtool missing'; Installs = @() }
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'pairtool missing'; Backup = $backupFile; Installs = @(); PreparationFailed = $false }
         }
         if ($WhatIfMode) {
             Write-Host "  [WHATIF] Would run: $pairtool -disassociate `"MCP#$ShareId`""
@@ -694,6 +779,7 @@ function Convert-OnePrinter {
             }
             if ($rc -ne 0) {
                 Write-Host "  WARN: pairtool returned 0x$($rc.ToString('X8')). Continuing anyway." -ForegroundColor Yellow
+                $errors += "pairtool exit $rc"
             } else {
                 Write-Host "  Disassociation succeeded." -ForegroundColor Green
             }
@@ -702,10 +788,11 @@ function Convert-OnePrinter {
         Write-Host "Step 3: Skipping pairtool disassociation (-SkipDisassociate)." -ForegroundColor Yellow
     }
 
-    # 5) For each user, write per-user DAF entry
+    # 6) Import the already-complete private payloads using normal hive handling.
     Write-Host "Step 4: Writing per-user DAF entries..." -ForegroundColor Cyan
     $installs = @()
-    foreach ($sid in $TargetSIDs) {
+    foreach ($payload in $payloads) {
+        $sid = $payload.SID
         Write-Host ""
         Write-Host "  User: $sid" -ForegroundColor White
         $weLoaded = $false
@@ -714,41 +801,34 @@ function Convert-OnePrinter {
                 $weLoaded = Mount-UserHive -UserSID $sid
                 if (-not (Test-HiveLoaded -UserSID $sid)) {
                     Write-Host "    SKIP: hive not available for $sid." -ForegroundColor Yellow
+                    $errors += "hive unavailable: $sid"
                     continue
                 }
             }
 
-            # Preserve the baseline order: build only after disassociation and hive
-            # availability. Stop-scoped preparation must succeed before this import;
-            # failure may leave earlier migration steps applied, not rolled back.
-            $savedPreference = $ErrorActionPreference
-            try {
-                $ErrorActionPreference = 'Stop'
-                $instanceGuid = "{$([Guid]::NewGuid().ToString())}"
-                $regContent = Build-PerUserRegContent `
-                    -UserSID $sid `
-                    -ShareId $ShareId `
-                    -InstanceGuid $instanceGuid `
-                    -TenantId $TenantId `
-                    -PerSystem $perSystem
-                $regFile = [IO.Path]::Combine($stagingDir, "PerUser-$([Guid]::NewGuid().ToString('N')).reg")
-                Write-NewStagingFile -Path $regFile -Content $regContent
-            } catch {
-                Write-Host "ERROR: Private payload preparation failed for ${sid}: $_" -ForegroundColor Red
-                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "preparation: $_"; Backup = $backupFile; Installs = $installs; PreparationFailed = $true }
-            } finally { $ErrorActionPreference = $savedPreference }
+            $instanceGuid = $payload.InstanceGuid
+            $regFile = $payload.RegFile
             Write-Host "    Generated: $regFile" -ForegroundColor DarkGray
             Write-Host "    Instance GUID: $instanceGuid"
 
             if ($WhatIfMode) {
                 Write-Host "    [WHATIF] Would import the .reg file above."
             } else {
-                $null = reg import $regFile 2>&1
+                # Catch only this import, not surrounding hive/native commands.
+                # An exception (including caller Stop on WinPS native stderr)
+                # means an uncertain/failed import, not evidence of rollback.
+                try { $null = reg import $regFile 2>&1 }
+                catch {
+                    Write-Host "    ERROR: Import failed or its completion is uncertain for ${sid}: $_. Payload: $regFile" -ForegroundColor Red
+                    $errors += "import exception for ${sid}: $_"
+                    continue
+                }
                 if ($LASTEXITCODE -eq 0) {
                     Write-Host "    Imported successfully." -ForegroundColor Green
                     $installs += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile }
                 } else {
                     Write-Host "    ERROR: reg import failed (exit $LASTEXITCODE)." -ForegroundColor Red
+                    $errors += "import exit $LASTEXITCODE for $sid"
                 }
             }
         }
@@ -757,7 +837,7 @@ function Convert-OnePrinter {
         }
     }
 
-    return [pscustomobject]@{ ShareId = $ShareId; Success = $true; Backup = $backupFile; Installs = $installs; PreparationFailed = $false }
+    return [pscustomobject]@{ ShareId = $ShareId; Success = ($errors.Count -eq 0); Error = ($errors -join '; '); Backup = $backupFile; Installs = $installs; PreparationFailed = $false }
 }
 
 # --- Resolve ShareIds to convert ---------------------------------------------
@@ -802,38 +882,45 @@ if ($targetSIDs.Count -eq 0) {
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $results = @()
-foreach ($sid in $shareIdsToConvert) {
-    # Force scalar capture: if Convert-OnePrinter ever leaks stdout, $r could become an array.
-    # Wrap with @(...) and grab the last element (the [pscustomobject] result we explicitly return).
-    $r = @(Convert-OnePrinter -ShareId $sid -TenantId $TenantId -TargetSIDs $targetSIDs `
-                              -Timestamp $timestamp `
-                              -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
-    $results += ,($r[-1])
-    # Explicit status propagation stops even with caller SilentlyContinue, without
-    # changing native/hive error handling or restarting services after this failure.
-    if ($r[-1].PreparationFailed) {
-        Write-Host "ERROR: Conversion stopped; no incomplete payload was imported. Disassociation or earlier user imports may already have occurred. Complete private backups, if any, were retained." -ForegroundColor Red
-        exit 1
-    }
-}
-
-# --- Restart services (once) -------------------------------------------------
-
-if (-not $SkipRestart -and -not $WhatIfMode) {
-    Write-Host ""
-    Write-Host "Restarting services..." -ForegroundColor Cyan
-    foreach ($svc in @('DeviceAssociationService', 'Spooler')) {
-        Write-Host "  Restarting $svc..."
-        try {
-            Restart-Service -Name $svc -Force -ErrorAction Stop
-            Write-Host "    OK." -ForegroundColor Green
-        } catch {
-            Write-Host "    WARN: $($_.Exception.Message)" -ForegroundColor Yellow
+$restartFailed = $false
+try {
+    foreach ($sid in $shareIdsToConvert) {
+        # Force scalar capture: if Convert-OnePrinter ever leaks stdout, $r could become an array.
+        # Wrap with @(...) and grab the last element (the [pscustomobject] result we explicitly return).
+        $r = @(Convert-OnePrinter -ShareId $sid -TenantId $TenantId -TargetSIDs $targetSIDs `
+                                  -Timestamp $timestamp `
+                                  -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
+        if ($r.Count -eq 0 -or $null -eq $r[-1].PSObject.Properties['Success']) {
+            # Some caller preferences can suppress a terminating function error.
+            # Missing completion is uncertain, never an omitted successful printer.
+            Write-Host "ERROR: No completion result for $sid; inspect preceding errors and printed backup paths." -ForegroundColor Red
+            $results += [pscustomobject]@{ ShareId = $sid; Success = $false; Error = 'conversion did not complete; state uncertain'; Backup = $null; Installs = @() }
+        } else {
+            $results += ,($r[-1])
         }
     }
-} elseif ($SkipRestart) {
-    Write-Host ""
-    Write-Host "Skipping service restart (-SkipRestart)." -ForegroundColor Yellow
+}
+finally {
+    # --- Restart services (once) ---------------------------------------------
+    # Finalize earlier conversions even if a later printer fails or a native/hive
+    # exception escapes. Do not silently abandon requested service restarts.
+    if (-not $SkipRestart -and -not $WhatIfMode) {
+        Write-Host ""
+        Write-Host "Restarting services..." -ForegroundColor Cyan
+        foreach ($svc in @('DeviceAssociationService', 'Spooler')) {
+            Write-Host "  Restarting $svc..."
+            try {
+                Restart-Service -Name $svc -Force -ErrorAction Stop
+                Write-Host "    OK." -ForegroundColor Green
+            } catch {
+                Write-Host "    WARN: $($_.Exception.Message)" -ForegroundColor Yellow
+                $restartFailed = $true
+            }
+        }
+    } elseif ($SkipRestart) {
+        Write-Host ""
+        Write-Host "Skipping service restart (-SkipRestart)." -ForegroundColor Yellow
+    }
 }
 
 # --- Summary -----------------------------------------------------------------
@@ -849,9 +936,10 @@ foreach ($r in $succeeded) {
     Write-Host ("    [{0}]  installs={1}/{2}  backup={3}" -f $r.ShareId, $r.Installs.Count, $targetSIDs.Count, $r.Backup) -ForegroundColor Green
 }
 foreach ($r in $failed) {
-    Write-Host ("    [{0}]  FAILED: {1}" -f $r.ShareId, $r.Error) -ForegroundColor Red
+    Write-Host ("    [{0}]  FAILED: {1}; installs={2}/{3}; backup={4}" -f $r.ShareId, $r.Error, $r.Installs.Count, $targetSIDs.Count, $r.Backup) -ForegroundColor Red
 }
 Write-Host "Done."
+if ($failed.Count -gt 0 -or $restartFailed) { exit 1 }
 # SIG # Begin signature block
 # MIIoKwYJKoZIhvcNAQcCoIIoHDCCKBgCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG

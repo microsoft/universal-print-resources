@@ -16,7 +16,6 @@ The Universal Print team does not make any commitments to the frequency of updat
 |----------|-------------|
 | [BadgeReleaseDemo](./BadgeReleaseDemo) | Interactive .NET console app demonstrating the Universal Print badge release lifecycle (printer registration, secure-release sharing, badge management, and IPP job fetch). |
 | [Scripts](./Scripts) | PowerShell scripts and the Universal Print connector sample. |
-| [Universal Print per-user migration](./Scripts/Convert-UpPrinterToPerUser.md) | Usage, protected staging/backups, signing, and focused regression checks for the printer migration script. |
 | [PrintTrace.cmd](./PrintTrace.cmd) | Batch script for collecting Universal Print client diagnostic traces. |
 
 ### IMPORTANT DISCLAIMER

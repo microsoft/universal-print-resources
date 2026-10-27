@@ -1,3 +1,6 @@
+# Run safely from the repository root with powershell.exe or pwsh.exe:
+# -NoProfile -File .\Scripts\Tests\Convert-UpPrinterToPerUser.Staging.Tests.ps1
+# No elevation or actual printer/registry/hive/service changes are performed.
 param (
     [string]$Case,
     [ValidateSet('Continue', 'Stop', 'SilentlyContinue')][string]$Preference = 'Continue'
@@ -31,10 +34,15 @@ if ($Case) {
     $null = [IO.Directory]::CreateDirectory($fixture)
     [IO.File]::WriteAllText($marker, 'UPConvert isolated test fixture')
     try {
+        $script:runCount = 0
+        $script:builtContents = @()
+        $script:importCount = 0
         function New-PrivateStagingDirectory {
             # Only the production parent/ACL creation is replaced. File creation,
             # parser, registry builder, and cleanup remain production code.
             if ($Case -eq 'parent-failure') { Write-Error 'Injected unsafe staging parent' }
+            $script:runCount++
+            $script:stage = Join-Path $fixture "stage-$script:runCount"
             $null = [IO.Directory]::CreateDirectory($stage)
             if ($Case -eq 'backup-collision') {
                 [IO.File]::WriteAllText((Join-Path $stage "PerSystem-MCP-$share-test.reg"), 'KEEP')
@@ -52,8 +60,9 @@ if ($Case) {
                         $global:LASTEXITCODE = 1
                         return
                     }
+                    $exportShare = ($args[1] -split 'MCP#')[-1]
                     $export = "Windows Registry Editor Version 5.00`r`n`r`n" +
-                        "[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\DeviceAssociationService\State\Store\MCP#$share\Properties\$CAT_AUTH\0002]`r`n" +
+                        "[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\DeviceAssociationService\State\Store\MCP#$exportShare\Properties\$CAT_AUTH\0002]`r`n" +
                         "@=hex(ffff0012):61,00,00,00`r`n"
                     [IO.File]::WriteAllText($args[2], $export, [Text.Encoding]::Unicode)
                     if ($Case -eq 'read-failure') { [IO.File]::Delete($args[2]) }
@@ -66,7 +75,14 @@ if ($Case) {
                     $payload = [IO.File]::ReadAllText($args[1], [Text.Encoding]::Unicode)
                     if (-not $payload.StartsWith('Windows Registry Editor Version 5.00')) { throw 'Partial import' }
                     if ($payload -notmatch 'HKEY_USERS\\S-1-5-21-1-2-3-100[12]\\') { throw 'Wrong user destination' }
-                    if ($payload -cne $script:lastBuiltContent) { throw 'Imported payload differs from unchanged builder output' }
+                    if ($script:builtContents -cnotcontains $payload) { throw 'Imported payload differs from unchanged builder output' }
+                    $script:importCount++
+                    if ($Case -in @('import-failure','driver-import-failure','import-exception') -and $script:importCount -eq 1) {
+                        Write-Host 'IMPORT_FAILED'
+                        if ($Case -eq 'import-exception') { throw 'Injected uncertain native import completion' }
+                        $global:LASTEXITCODE = 5
+                        return
+                    }
                     Write-Host 'IMPORTED'
                     return
                 }
@@ -86,7 +102,18 @@ if ($Case) {
             $script:hiveLoaded = $true
             return $true
         }
-        function Dismount-UserHive { Write-Host 'HIVE_DISMOUNTED' }
+        function Dismount-UserHive {
+            Write-Host 'HIVE_DISMOUNTED'
+            $script:hiveLoaded = $false
+        }
+        function Restart-Service {
+            [CmdletBinding()]
+            param($Name, [switch]$Force)
+            Write-Host "RESTARTED:$Name"
+            if ($Case -eq 'driver-service-failure' -and $Name -eq 'DeviceAssociationService') {
+                Write-Error 'Injected service restart failure'
+            }
+        }
         function Test-Path {
             return $true
         }
@@ -98,12 +125,14 @@ if ($Case) {
         function Build-PerUserRegContent {
             param ($UserSID, $ShareId, $InstanceGuid, $TenantId, $PerSystem)
             Write-Host 'BUILT'
-            if ($Case -in @('build-failure', 'driver-failure', 'mounted-build-failure')) {
+            if ($Case -in @('build-failure', 'mounted-build-failure') -or
+                ($Case -eq 'driver-failure' -and $ShareId -ne $share)) {
                 Write-Error 'Injected preparation failure'
                 return
             }
-            $script:lastBuiltContent = & $script:originalBuild @PSBoundParameters
-            return $script:lastBuiltContent
+            $content = & $script:originalBuild @PSBoundParameters
+            $script:builtContents += $content
+            return $content
         }
         if ($Case -eq 'write-failure') {
             $script:writeCount = 0
@@ -126,21 +155,18 @@ if ($Case) {
             Timestamp = 'test'
             SkipDisassociate = $false
         }
-        if ($Case -eq 'driver-failure') {
-            $shareIdsToConvert = @($share)
+        if ($Case -in @('driver-failure','driver-import-failure','driver-service-failure')) {
+            $shareIdsToConvert = @($share, '22222222-2222-3333-4444-555555555555')
             $targetSIDs = $arguments.TargetSIDs
             $TenantId = $arguments.TenantId
             $timestamp = 'test'
             $WhatIfMode = $false
             $SkipDisassociate = $false
+            $SkipRestart = $false
             $results = @()
-            $driver = $ast.EndBlock.Statements | Where-Object {
-                $_ -is [Management.Automation.Language.ForEachStatementAst] -and
-                $_.Variable.VariablePath.UserPath -eq 'sid' -and
-                $_.Condition.Extent.Text -eq '$shareIdsToConvert'
-            }
-            if (@($driver).Count -ne 1) { throw 'Could not identify production conversion loop' }
-            . ([scriptblock]::Create($driver.Extent.Text))
+            $driver = (($text -split '# --- Convert each printer[^\r\n]*\r?\n')[1] -split '# SIG # Begin signature block')[0]
+            if (-not $driver) { throw 'Could not identify production conversion/finalization blocks' }
+            . ([scriptblock]::Create($driver))
             Write-Host 'AFTER_DRIVER'
         }
         $result = Convert-OnePrinter @arguments
@@ -154,10 +180,8 @@ if ($Case) {
             [IO.File]::ReadAllText($marker) -eq 'UPConvert isolated test fixture') {
             $remaining = @()
             $backups = @()
-            if ([IO.Directory]::Exists($stage)) {
-                $remaining = @([IO.Directory]::GetFiles($stage, 'PerUser-*.reg'))
-                $backups = @([IO.Directory]::GetFiles($stage, 'PerSystem-*.reg'))
-            }
+            $remaining = @([IO.Directory]::GetFiles($fixture, 'PerUser-*.reg', [IO.SearchOption]::AllDirectories))
+            $backups = @([IO.Directory]::GetFiles($fixture, 'PerSystem-*.reg', [IO.SearchOption]::AllDirectories))
             Write-Host "PAYLOADS_REMAINING:$($remaining.Count)"
             Write-Host "BACKUPS_REMAINING:$($backups.Count)"
             if ($Case -eq 'backup-collision') {
@@ -177,29 +201,35 @@ $checks = 0
 foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     foreach ($caseValue in @('success', 'mounted-success', 'hive-unavailable',
         'parent-failure', 'build-failure', 'mounted-build-failure', 'write-failure',
-        'read-failure', 'backup-collision', 'export-failure', 'driver-failure')) {
+        'read-failure', 'backup-collision', 'export-failure', 'import-failure', 'import-exception',
+        'driver-failure', 'driver-import-failure', 'driver-service-failure')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
-        $expectedPayloads = switch ($caseValue) { 'success' { 2 } 'mounted-success' { 2 } 'write-failure' { 1 } default { 0 } }
+        $expectedPayloads = switch ($caseValue) {
+            'success' { 2 } 'mounted-success' { 2 } 'write-failure' { 1 } 'hive-unavailable' { 2 }
+            'import-failure' { 2 } 'import-exception' { 2 } 'driver-failure' { 2 }
+            'driver-import-failure' { 4 } 'driver-service-failure' { 4 }
+            default { 0 }
+        }
         if ($output -notmatch "PAYLOADS_REMAINING:$expectedPayloads") {
             throw "$caseValue/$preferenceValue retained unexpected payloads:`n$output"
         }
         $postDisassociation = $caseValue -in @('success', 'mounted-success', 'hive-unavailable',
-            'build-failure', 'mounted-build-failure', 'write-failure', 'driver-failure')
+            'import-failure', 'import-exception', 'driver-failure', 'driver-import-failure','driver-service-failure')
         if ($postDisassociation) {
-            if ($output -notmatch '(?s)EXPORTED.*DISASSOCIATED.*HIVE_CHECKED') {
-                throw "Baseline disassociate/hive ordering changed:`n$output"
+            if ($output -notmatch '(?s)EXPORTED.*BUILT.*BUILT.*DISASSOCIATED.*HIVE_CHECKED') {
+                throw "Payloads were not fully prepared before disassociation:`n$output"
             }
-            if ($caseValue -ne 'hive-unavailable' -and
-                $output -notmatch '(?s)DISASSOCIATED.*HIVE_CHECKED.*BUILT') {
-                throw "Payload built before disassociation/hive availability:`n$output"
-            }
-        } elseif ($output -match 'DISASSOCIATED|HIVE_CHECKED|BUILT|IMPORTED') {
-            throw "Backup failure reached migration:`n$output"
+        } elseif ($output -match 'DISASSOCIATED|IMPORTED') {
+            throw "Preflight failure reached destructive migration:`n$output"
         }
-        if ($caseValue -in @('mounted-success', 'mounted-build-failure') -and
-            $output -notmatch '(?s)HIVE_MOUNTED.*BUILT.*HIVE_DISMOUNTED') {
+        if ($caseValue -in @('parent-failure','read-failure','backup-collision','export-failure') -and
+            $output -match 'HIVE_CHECKED|BUILT') {
+            throw "Backup failure reached hive/payload preflight:`n$output"
+        }
+        if ($caseValue -eq 'mounted-success' -and
+            $output -notmatch '(?s)BUILT.*DISASSOCIATED.*HIVE_MOUNTED.*IMPORTED.*HIVE_DISMOUNTED') {
             throw "Owned hive was not unloaded:`n$output"
         }
         if ($caseValue -in @('success', 'mounted-success')) {
@@ -208,20 +238,34 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             }
         } elseif ($caseValue -eq 'hive-unavailable') {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:0' -or
-                $output -notmatch 'RETURNED:True' -or $output -match 'BUILT|IMPORTED') {
-                throw "Unavailable hive did not skip payload generation:`n$output"
+                $output -notmatch 'RETURNED:False' -or $output -match 'IMPORTED') {
+                throw "Unavailable hives were not reported as incomplete migration:`n$output"
             }
         } elseif ($caseValue -eq 'export-failure') {
             if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:False' -or $output -notmatch 'BACKUPS_REMAINING:0') {
                 throw "Export failure handling failed:`n$output"
             }
-        } elseif ($caseValue -eq 'driver-failure') {
-            if ($exitCode -ne 1 -or $output -match '(?m)^IMPORTED\r?$|AFTER_DRIVER|RETURNED:') {
-                throw "Production loop did not abort on preparation failure:`n$output"
+        } elseif ($caseValue -in @('driver-failure','driver-import-failure','driver-service-failure')) {
+            $failedCount = if ($caseValue -eq 'driver-service-failure') { 0 } else { 1 }
+            $succeededCount = if ($caseValue -eq 'driver-service-failure') { 2 } else { 1 }
+            $imports = switch ($caseValue) { 'driver-failure' { 2 } 'driver-import-failure' { 3 } default { 4 } }
+            if ($exitCode -ne 1 -or $output -match 'AFTER_DRIVER|RETURNED:' -or
+                $output -notmatch 'RESTARTED:DeviceAssociationService' -or
+                $output -notmatch 'RESTARTED:Spooler' -or $output -notmatch "Failed\s+:\s+$failedCount" -or
+                $output -notmatch "Succeeded\s+:\s+$succeededCount" -or
+                ([regex]::Matches($output, '(?m)^IMPORTED\r?$')).Count -ne $imports -or
+                $output -notmatch 'backup=') {
+                throw "Production loop did not finalize/report failure:`n$output"
             }
+            if ($caseValue -eq 'driver-import-failure' -and $output -notmatch 'installs=1/2') {
+                throw "Partial progress was missing from failure summary:`n$output"
+            }
+        } elseif ($caseValue -in @('import-failure','import-exception')) {
+            if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:False' -or
+                $output -notmatch 'INSTALLS:1' -or $output -notmatch 'IMPORT_FAILED.*' -or
+                $output -notmatch 'IMPORTED') { throw "Later users were not completed/reported:`n$output" }
         } else {
-            $expectedImports = if ($caseValue -eq 'write-failure') { 1 } else { 0 }
-            if ($exitCode -ne 0 -or ([regex]::Matches($output, 'IMPORTED')).Count -ne $expectedImports -or
+            if ($exitCode -ne 0 -or $output -match 'IMPORTED' -or
                 $output -match 'RETURNED:True' -or
                 $output -notmatch 'RETURNED:False' -or $output -notmatch 'PREPARATION_FAILED:True' -or
                 $output -notmatch 'ERROR: Private') {
