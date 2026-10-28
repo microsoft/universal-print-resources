@@ -35,6 +35,18 @@ if ($Case) {
     [IO.File]::WriteAllText($marker, 'UPConvert isolated test fixture')
     [IO.File]::WriteAllText((Join-Path $fixture 'NTUSER.DAT'), 'isolated non-hive fixture')
     try {
+        if ($Case -eq 'early-whatif-elevation') {
+            $guard = @($ast.EndBlock.Statements | Where-Object {
+                $_ -is [Management.Automation.Language.IfStatementAst] -and
+                $_.Extent.Text.StartsWith('if (-not $WhatIfMode)')
+            })
+            if ($guard.Count -ne 1) { throw 'Could not identify entry-point privilege guard' }
+            $condition = $guard[0].Clauses[1].Item1.Extent.Text
+            $guardText = $guard[0].Extent.Text.Replace($condition, '$true')
+            $WhatIfMode = $true
+            . ([scriptblock]::Create($guardText))
+            throw 'Nonelevated WhatIf guard did not exit'
+        }
         $script:runCount = 0
         $script:builtContents = @()
         $script:importCount = 0
@@ -48,6 +60,18 @@ if ($Case) {
         $script:originalMount = ${function:Mount-UserHive}
         $script:profileQueries = 0
         function Start-Sleep {}
+        function Get-ConversionToolPath {
+            param($Name)
+            if ($Name -eq 'reg.exe') { return 'reg.exe' }
+            if ($Name -eq 'pairtool.exe') { return 'Invoke-TestPairtool' }
+            throw "Unexpected tool: $Name"
+        }
+        function Assert-LocalProfileHivePath {
+            param($Path)
+            if ($Path -cne [IO.Path]::Combine($fixture,'NTUSER.DAT') -and $Case -ne 'directory-ntuser') {
+                throw 'Profile safety check escaped isolated fixture'
+            }
+        }
         function New-PrivateStagingDirectory {
             # Only the production parent/ACL creation is replaced. File creation,
             # parser, registry builder, and cleanup remain production code.
@@ -223,6 +247,7 @@ if ($Case) {
         function Test-Path {
             [CmdletBinding()]
             param([string]$LiteralPath, [string]$Path, [string]$PathType)
+            if ($LiteralPath -eq 'Invoke-TestPairtool' -or $Path -eq 'Invoke-TestPairtool') { return $true }
             if ($Case -eq 'driver-auto-path-error' -and $LiteralPath -like '*\denied\NTUSER.DAT') {
                 throw [UnauthorizedAccessException]::new('Injected profile file access denied')
             }
@@ -235,7 +260,7 @@ if ($Case) {
             }
             return $true
         }
-        Set-Item -LiteralPath "Function:\$env:SystemRoot\System32\pairtool.exe" -Value {
+        function Invoke-TestPairtool {
             Write-Host 'DISASSOCIATED'
             $script:pairCount++
             if ($Case -eq 'driver-pair-exception' -and $script:pairCount -eq 1) {
@@ -393,6 +418,12 @@ if ($Case) {
 
 $runtime = (Get-Process -Id $PID).Path
 $checks = 0
+foreach ($tool in @('reg.exe','pairtool.exe')) {
+    if ((Get-ConversionToolPath -Name $tool) -cne [IO.Path]::Combine([Environment]::SystemDirectory,$tool)) {
+        throw 'Conversion tool did not resolve to the OS system directory'
+    }
+    $checks++
+}
 # Read-only integration probe: unlike profile mocks, this exercises the actual
 # registry provider against the standard SYSTEM profile's expandable value.
 $systemProfileKey = Microsoft.PowerShell.Management\Get-Item -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\S-1-5-18' -ErrorAction Stop
@@ -456,7 +487,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-auto-missing-key','driver-explicit-missing-key',
         'driver-auto-missing-value','driver-explicit-missing-value','driver-auto-provider-denied',
         'driver-auto-zero-profile','driver-explicit-zero-profile',
-        'driver-auto-qword-profile','driver-explicit-qword-profile','directory-ntuser')) {
+        'driver-auto-qword-profile','driver-explicit-qword-profile','directory-ntuser','early-whatif-elevation')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -507,7 +538,16 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             $output -notmatch '(?s)BUILT.*DISASSOCIATED.*HIVE_MOUNTED.*IMPORTED.*HIVE_DISMOUNTED') {
             throw "Owned hive was not unloaded:`n$output"
         }
-        if ($policyCase) {
+        if ($caseValue -in @('mounted-success','expanded-profile') -and
+            $output -match 'HIVE_MOUNTED\s+HIVE_CHECKED') {
+            throw "Successfully mounted hive was unnecessarily reopened:`n$output"
+        }
+        if ($caseValue -eq 'early-whatif-elevation') {
+            if ($exitCode -ne 1 -or $output -notmatch 'ERROR: WhatIf preparation requires SYSTEM or an elevated administrator' -or
+                $output -match 'QUERIES:\d|EXPORTED|DISASSOCIATED|IMPORTED') {
+                throw "WhatIf entry-point elevation diagnostic failed:`n$output"
+            }
+        } elseif ($policyCase) {
             $warningOnly = $caseValue -in @('driver-auto-stale','driver-auto-missing-ntuser','driver-auto-whatif','driver-auto-missing-key','driver-auto-missing-value')
             $expectedExit = if ($warningOnly) { 0 } else { 1 }
             $failedCount = if ($warningOnly) { 0 } elseif ($caseValue -eq 'driver-auto-import-error') { 1 } else { 2 }
@@ -739,9 +779,10 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         param($LiteralPath)
         if ($script:missingHive) { throw [Management.Automation.ItemNotFoundException]::new('missing hive') }
         if ($script:deniedHive) { throw [UnauthorizedAccessException]::new('denied hive') }
-        return [pscustomobject]@{}
+        return [pscustomobject]@{} | Add-Member -MemberType ScriptMethod -Name Close -Value { $script:probeKeyClosed = $true } -PassThru
     }
     if (-not (Test-HiveLoaded -UserSID 'test')) { throw 'Existing hive rejected' }
+    if (-not $script:probeKeyClosed) { throw 'Hive probe leaked registry handle' }
     $script:missingHive = $true
     if (Test-HiveLoaded -UserSID 'test') { throw 'Missing hive accepted' }
     $script:missingHive = $false
@@ -752,6 +793,43 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     if (-not $rejected) { throw 'Inaccessible hive treated as unloaded' }
 }
 $checks += 26
+& {
+    $script:profileVisited = @()
+    $hivePath = [IO.Path]::Combine([IO.Path]::GetPathRoot($source),'Users','fixture','NTUSER.DAT')
+    function Get-Item {
+        [CmdletBinding()]
+        param($LiteralPath, [switch]$Force)
+        $script:profileVisited += $LiteralPath
+        $attributes = if ($LiteralPath -eq $script:redirectedProfileEntry) { [IO.FileAttributes]::ReparsePoint } else { [IO.FileAttributes]::Normal }
+        return [pscustomobject]@{ Attributes = $attributes }
+    }
+    Assert-LocalProfileHivePath -Path $hivePath
+    foreach ($entry in @($hivePath, [IO.Path]::GetDirectoryName($hivePath), [IO.Directory]::GetParent([IO.Path]::GetDirectoryName($hivePath)).FullName)) {
+        $script:redirectedProfileEntry = $entry
+        $rejected = $false
+        try { Assert-LocalProfileHivePath -Path $hivePath }
+        catch { $rejected = $_.Exception.Message -match 'cannot contain a reparse point' }
+        if (-not $rejected) { throw "Redirected profile entry accepted: $entry" }
+    }
+    $rejected = $false
+    try { Assert-LocalProfileHivePath -Path '\\localhost\share\NTUSER.DAT' }
+    catch { $rejected = $_.Exception.Message -match 'fixed local drive' }
+    if (-not $rejected) { throw 'Network profile drive accepted' }
+}
+$checks += 5
+& {
+    function Test-HiveLoaded { return $false }
+    function Test-Path { return $true }
+    function Assert-LocalProfileHivePath {}
+    function Invoke-ConversionNative {
+        return [pscustomobject]@{ ExitCode = 5; Output = @('Injected hive load denied') }
+    }
+    $rejected = $false
+    try { Mount-UserHive -UserSID 'test' -ProfilePath 'C:\fixture' }
+    catch { $rejected = $_.Exception.Message -match 'reg load failed.*exit 5.*Injected hive load denied' }
+    if (-not $rejected) { throw 'Hive load diagnostic was discarded' }
+}
+$checks++
 & {
     Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
     $null = Invoke-ConversionNative -Command $env:ComSpec -Arguments @('/d','/c','exit /b 0')
@@ -1068,6 +1146,15 @@ try {
         try { New-PrivateStagingDirectory }
         catch { $rejected = $_.Exception.Message -match 'owner or protected DACL differs' }
         if (-not $rejected) { throw "Unexpected postcreation security accepted: $sddl" }
+        $checks++
+    }
+    foreach ($sddl in @('O:SYG:SYD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)',
+        'O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
+        'O:SYG:SYD:PAR(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')) {
+        $injectedAcl.SetSecurityDescriptorSddlForm($sddl)
+        $injectedAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+        . ([scriptblock]::Create($postconditionFactory))
+        Assert-ProtectedStagingDirectory -Path $rootProbe -Security $rootProbeSecurity
         $checks++
     }
 } finally {

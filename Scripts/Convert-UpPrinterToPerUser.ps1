@@ -48,8 +48,8 @@ Ask your administrator to review any rejected ancestor/root permissions.
 Retained files are sensitive backups, not managed archives. Arrange secure
 retention and remove printed run directories when no longer required. The empty
 protected UPConvert root is kept for reuse; the script never removes it.
-Exact descriptor comparison intentionally fails closed if an administrator
-changes even DACL control flags. To reset an altered root, stop all conversions,
+Owner, protected/canonical DACL and exact ACE contents are checked; harmless
+auto-inheritance bookkeeping flags are ignored. To reset an altered root, stop all conversions,
 securely archive/remove any retained run directories, then verify the exact
 Windows\UPConvert path is an ordinary, non-reparse, empty directory. From an
 approved elevated console, use [IO.Directory]::Delete($rootPath, $false) with that
@@ -58,6 +58,11 @@ reparse point or an unexplained/preexisting directory. The next run recreates
 the protected root. No permission repair or automatic deletion is performed.
 Profile hive loading supports local fully qualified drive paths only, not UNC
 or device paths, to avoid SYSTEM authentication to remote profile hosts.
+Before preparing an unloaded profile and immediately before reg load, require a
+fixed drive and reject reparse points along the hive path. These checks are not
+atomic: a user-writable profile can change between inspection and reg load.
+Run migration while target users and other profile writers are quiescent; this
+is not a race-resistant hive-loading mechanism for actively adversarial profiles.
 Literal unmatched percent characters are supported, but a matched percent pair
 within one path component (for example a%b%c) is rejected as a possible unresolved
 environment token, even when it is a literal directory name.
@@ -197,6 +202,11 @@ if (-not $WhatIfMode) {
         Write-Host "       Use ``psexec -s -i pwsh`` to get a SYSTEM PowerShell prompt." -ForegroundColor Yellow
         exit 1
     }
+} elseif (-not ([Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host 'ERROR: WhatIf preparation requires SYSTEM or an elevated administrator.' -ForegroundColor Red
+    exit 1
 }
 
 # --- Helpers (hive load/unload, copied/adapted from upcleanup.ps1) ------------
@@ -323,12 +333,30 @@ function Assert-ProtectedStagingDirectory {
         throw "Staging directory must be an ordinary non-reparse directory: $Path"
     }
     $actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path -ErrorAction Stop
-    $access = [Security.AccessControl.AccessControlSections]::Access
+    $sections = [Security.AccessControl.AccessControlSections]::Access
+    $actualDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($actual.GetSecurityDescriptorSddlForm($sections))
+    $expectedDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($Security.GetSecurityDescriptorSddlForm($sections))
+    $actualAces = @($actualDescriptor.DiscretionaryAcl | ForEach-Object {
+        $bytes = [byte[]]::new($_.BinaryLength)
+        $_.GetBinaryForm($bytes, 0)
+        [Convert]::ToBase64String($bytes)
+    } | Sort-Object)
+    $expectedAces = @($expectedDescriptor.DiscretionaryAcl | ForEach-Object {
+        $bytes = [byte[]]::new($_.BinaryLength)
+        $_.GetBinaryForm($bytes, 0)
+        [Convert]::ToBase64String($bytes)
+    } | Sort-Object)
     if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $Security.GetOwner([Security.Principal.SecurityIdentifier]).Value -or
-        -not $actual.AreAccessRulesProtected -or
-        $actual.GetSecurityDescriptorSddlForm($access) -ne $security.GetSecurityDescriptorSddlForm($access)) {
+        -not $actual.AreAccessRulesProtected -or -not $actual.AreAccessRulesCanonical -or
+        $null -eq $actualDescriptor.DiscretionaryAcl -or
+        ($actualAces -join ',') -cne ($expectedAces -join ',')) {
         throw "Staging directory owner or protected DACL differs from the requested security: $path"
     }
+}
+
+function Get-ConversionToolPath {
+    param ([ValidateSet('reg.exe','pairtool.exe')][string]$Name)
+    return [IO.Path]::Combine([Environment]::SystemDirectory, $Name)
 }
 
 function Invoke-ConversionNative {
@@ -341,6 +369,9 @@ function Invoke-ConversionNative {
     $previousExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
     $previousExitValue = if ($null -ne $previousExitCode) { $previousExitCode.Value } else { $null }
     try {
+        if ($Command -in @('reg.exe', 'pairtool.exe')) {
+            $Command = Get-ConversionToolPath -Name $Command
+        }
         $global:LASTEXITCODE = $null
         $output = @(& $Command @Arguments 2>&1)
         if ($null -eq $global:LASTEXITCODE) { throw "Native command did not return an exit code: $Command" }
@@ -444,11 +475,14 @@ function Test-HiveLoaded {
     # reg.exe uses the same exit code for access denied and not found, and /ve
     # also fails for an existing key without a default value. The provider keeps
     # missing-key errors distinct without depending on localized native text.
+    $key = $null
     try {
-        $null = Get-Item -LiteralPath "Registry::HKEY_USERS\$UserSID" -ErrorAction Stop
+        $key = Get-Item -LiteralPath "Registry::HKEY_USERS\$UserSID" -ErrorAction Stop
         return $true
     } catch [Management.Automation.ItemNotFoundException] {
         return $false
+    } finally {
+        if ($null -ne $key) { $key.Close() }
     }
 }
 
@@ -466,9 +500,36 @@ function Mount-UserHive {
         Write-Host "  WARN: NTUSER.DAT not found at $ntuser." -ForegroundColor Yellow
         return $false
     }
+    Assert-LocalProfileHivePath -Path $ntuser
     Write-Host "  Loading hive HKU\$UserSID from $ntuser" -ForegroundColor DarkGray
     $result = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('load', "HKU\$UserSID", $ntuser)
-    return ($result.ExitCode -eq 0)
+    if ($result.ExitCode -ne 0) {
+        throw "reg load failed for $UserSID (exit $($result.ExitCode)): $($result.Output -join ' ')"
+    }
+    return $true
+}
+
+function Assert-LocalProfileHivePath {
+    param ([string]$Path)
+    $root = [IO.Path]::GetPathRoot($Path)
+    if ($root -notmatch '^[A-Za-z]:\\$' -or
+        [IO.DriveInfo]::new($root).DriveType -ne [IO.DriveType]::Fixed) {
+        throw "Profile hive requires a fixed local drive: $Path"
+    }
+    $directory = [IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($Path))
+    $chain = @($Path)
+    while ($null -ne $directory) {
+        $chain = @($directory.FullName) + $chain
+        $directory = $directory.Parent
+    }
+    foreach ($entry in $chain) {
+        $item = Get-Item -LiteralPath $entry -Force -ErrorAction Stop
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "Profile hive path cannot contain a reparse point: $entry"
+        }
+    }
+    # These are point-in-time checks. User-writable profiles are not pinned
+    # against replacement between validation and reg.exe opening the hive.
 }
 
 function Dismount-UserHive {
@@ -892,6 +953,8 @@ function Convert-OnePrinter {
                         $ntuser = [IO.Path]::Combine($profilePath, 'NTUSER.DAT')
                         if (-not (Test-Path -LiteralPath $ntuser -PathType Leaf -ErrorAction Stop)) {
                             $ineligibleReason = "NTUSER.DAT is missing: $ntuser"
+                        } else {
+                            Assert-LocalProfileHivePath -Path $ntuser
                         }
                     }
                 }
@@ -940,7 +1003,7 @@ function Convert-OnePrinter {
         # transaction. Keep processing, but never report those outcomes as success.
         if (-not $SkipDisassociate) {
             Write-Host "Step 3: Disassociating per-system AEP via pairtool..." -ForegroundColor Cyan
-            $pairtool = "$env:SystemRoot\System32\pairtool.exe"
+            $pairtool = Get-ConversionToolPath -Name 'pairtool.exe'
             if (-not (Test-Path $pairtool)) {
                 Write-Host "ERROR: pairtool.exe not found at $pairtool." -ForegroundColor Red
                 return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'pairtool missing'; Backup = $backupFile; Installs = @(); SkippedCount = $skippedCount }
@@ -977,7 +1040,7 @@ function Convert-OnePrinter {
             try {
                 if (-not (Test-HiveLoaded -UserSID $sid)) {
                     $weLoaded = Mount-UserHive -UserSID $sid -ProfilePath $payload.ProfilePath
-                    if (-not (Test-HiveLoaded -UserSID $sid)) {
+                    if (-not $weLoaded -and -not (Test-HiveLoaded -UserSID $sid)) {
                         Write-Host "    SKIP: hive not available for $sid." -ForegroundColor Yellow
                         $errors += "hive unavailable: $sid"
                         continue
