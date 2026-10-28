@@ -33,6 +33,7 @@ if ($Case) {
     $stage = Join-Path $fixture 'stage'
     $null = [IO.Directory]::CreateDirectory($fixture)
     [IO.File]::WriteAllText($marker, 'UPConvert isolated test fixture')
+    [IO.File]::WriteAllText((Join-Path $fixture 'NTUSER.DAT'), 'isolated non-hive fixture')
     try {
         $script:runCount = 0
         $script:builtContents = @()
@@ -56,7 +57,7 @@ if ($Case) {
             }
             return $stage
         }
-        function reg {
+        function reg.exe {
             $global:LASTEXITCODE = 0
             switch ($args[0]) {
                 'unload' {
@@ -110,17 +111,26 @@ if ($Case) {
         }
         $script:hiveLoaded = $false
         function Test-HiveLoaded {
+            param([string]$UserSID)
             Write-Host 'HIVE_CHECKED'
             $script:hiveChecks++
             if ($Case -eq 'driver-hive-check-exception' -and $script:hiveChecks -eq 1) {
                 throw 'Injected first-user hive-check exception'
             }
-            if ($Case -eq 'hive-unavailable') { return $false }
+            if ($Case -in @('mixed-targets','driver-mixed-targets')) { return $script:hiveLoaded }
+            if ($Case -in @('hive-unavailable','missing-profile','missing-ntuser')) { return $false }
             if ($Case -in @('mounted-build-failure', 'mounted-success',
                 'driver-mount-exception','driver-unload-exception','driver-import-unload-exception','driver-unload-exit')) {
                 return $script:hiveLoaded
             }
             return $true
+        }
+        function Get-ProfileImagePath {
+            param([string]$UserSID)
+            if ($Case -in @('hive-unavailable','missing-profile') -or
+                ($Case -in @('mixed-targets','driver-mixed-targets') -and $UserSID -match '1002$')) { return $null }
+            if ($Case -eq 'missing-ntuser') { return [IO.Path]::Combine($fixture,'absent') }
+            return $fixture
         }
         function Mount-UserHive {
             Write-Host 'HIVE_MOUNTED'
@@ -153,6 +163,9 @@ if ($Case) {
             }
         }
         function Test-Path {
+            [CmdletBinding()]
+            param([string]$LiteralPath, [string]$Path, [string]$PathType)
+            if ($LiteralPath) { return [IO.File]::Exists($LiteralPath) }
             return $true
         }
         Set-Item -LiteralPath "Function:\$env:SystemRoot\System32\pairtool.exe" -Value {
@@ -197,6 +210,12 @@ if ($Case) {
             Timestamp = 'test'
             SkipDisassociate = $false
         }
+        if ($Case -eq 'invalid-sid') { $arguments.TargetSIDs = @('not-a-sid') }
+        if ($Case -eq 'comma-sids') { $arguments.TargetSIDs = @('S-1-5-21-1-2-3-1001,S-1-5-21-1-2-3-1002') }
+        if ($Case -eq 'range-sid') { $arguments.TargetSIDs = @('S-1-5-21-1-2-3-4294967296') }
+        if ($Case -in @('mixed-targets','driver-mixed-targets')) { $arguments.TargetSIDs += 'not-a-sid' }
+        if ($Case -eq 'driver-no-targets') { $arguments.TargetSIDs = @('not-a-sid') }
+        if ($Case -eq 'whatif') { $arguments.WhatIfMode = $true }
         if ($Case -eq 'driver-boundary-exception') {
             $script:originalConvert = ${function:Convert-OnePrinter}
             $script:conversionCount = 0
@@ -211,20 +230,25 @@ if ($Case) {
             $shareIdsToConvert = @($share, '22222222-2222-3333-4444-555555555555')
             $targetSIDs = $arguments.TargetSIDs
             $TenantId = $arguments.TenantId
-            $timestamp = 'test'
             $WhatIfMode = $false
             $SkipDisassociate = $false
             $SkipRestart = $false
             $results = @()
-            $driver = (($text -split '# --- Convert each printer[^\r\n]*\r?\n')[1] -split '# SIG # Begin signature block')[0]
-            if (-not $driver) { throw 'Could not identify production conversion/finalization blocks' }
+            $statements = @($ast.EndBlock.Statements)
+            $start = @($statements | Where-Object {
+                $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+                $_.Left.Extent.Text -eq '$timestamp'
+            })
+            if ($start.Count -ne 1) { throw 'Could not identify production driver assignment' }
+            $driver = ($statements | Where-Object {
+                $_.Extent.StartOffset -ge $start[0].Extent.StartOffset
+            } | ForEach-Object { $_.Extent.Text }) -join "`r`n"
             . ([scriptblock]::Create($driver))
             Write-Host 'AFTER_DRIVER'
         }
         $result = Convert-OnePrinter @arguments
         Write-Host "RETURNED:$($result.Success)"
         Write-Host "INSTALLS:$($result.Installs.Count)"
-        Write-Host "PREPARATION_FAILED:$($result.PreparationFailed)"
         Write-Host "PREFERENCE_AFTER:$ErrorActionPreference"
     }
     finally {
@@ -251,36 +275,55 @@ if ($Case) {
 $runtime = (Get-Process -Id $PID).Path
 $checks = 0
 foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
+    foreach ($exit in @(0, 7)) {
+        $savedPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = $preferenceValue
+            $native = Invoke-ConversionNative -Command $env:ComSpec -Arguments @(
+                '/d', '/c', "echo harmless-native-probe 1>&2 & exit /b $exit")
+            if ($native.ExitCode -ne $exit -or ($native.Output -join ' ') -notmatch 'harmless-native-probe') {
+                throw 'Native stderr/exit handling failed'
+            }
+            if ($ErrorActionPreference -ne $preferenceValue) { throw 'Native boundary changed caller preference' }
+        } finally { $ErrorActionPreference = $savedPreference }
+        $checks++
+    }
+}
+foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     foreach ($caseValue in @('success', 'mounted-success', 'hive-unavailable',
         'parent-failure', 'build-failure', 'mounted-build-failure', 'write-failure',
         'read-failure', 'backup-collision', 'export-failure', 'import-failure', 'import-exception',
         'driver-failure', 'driver-import-failure', 'driver-service-failure',
         'driver-query-exception', 'driver-pair-exception', 'driver-hive-check-exception',
         'driver-mount-exception', 'driver-unload-exception', 'driver-import-unload-exception',
-        'driver-unload-exit','driver-boundary-exception')) {
+        'driver-unload-exit','driver-boundary-exception','invalid-sid','comma-sids',
+        'range-sid','missing-profile','missing-ntuser','mixed-targets','whatif',
+        'driver-no-targets','driver-mixed-targets')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
         $expectedPayloads = switch ($caseValue) {
-            'success' { 2 } 'mounted-success' { 2 } 'write-failure' { 1 } 'hive-unavailable' { 2 }
+            'success' { 2 } 'mounted-success' { 2 } 'write-failure' { 1 } 'hive-unavailable' { 0 }
             'import-failure' { 2 } 'import-exception' { 2 } 'driver-failure' { 2 }
             'driver-import-failure' { 4 } 'driver-service-failure' { 4 }
             'driver-query-exception' { 2 } 'driver-pair-exception' { 4 }
-            'driver-hive-check-exception' { 4 } 'driver-mount-exception' { 4 }
+            'driver-hive-check-exception' { 3 } 'driver-mount-exception' { 4 }
             'driver-unload-exception' { 4 } 'driver-import-unload-exception' { 4 }
             'driver-unload-exit' { 4 } 'driver-boundary-exception' { 2 }
+            'mixed-targets' { 1 } 'whatif' { 2 }
+            'driver-no-targets' { 0 } 'driver-mixed-targets' { 2 }
             default { 0 }
         }
         if ($output -notmatch "PAYLOADS_REMAINING:$expectedPayloads") {
             throw "$caseValue/$preferenceValue retained unexpected payloads:`n$output"
         }
-        $postDisassociation = $caseValue -like 'driver-*' -or $caseValue -in @('success', 'mounted-success', 'hive-unavailable',
+        $postDisassociation = ($caseValue -like 'driver-*' -and $caseValue -notin @('driver-no-targets','driver-mixed-targets')) -or $caseValue -in @('success', 'mounted-success',
             'import-failure', 'import-exception')
         if ($postDisassociation) {
             if ($output -notmatch '(?s)EXPORTED.*BUILT.*BUILT.*DISASSOCIATED.*HIVE_CHECKED') {
                 throw "Payloads were not fully prepared before disassociation:`n$output"
             }
-        } elseif ($output -match 'DISASSOCIATED|IMPORTED') {
+        } elseif ($caseValue -notin @('mixed-targets','driver-mixed-targets') -and $output -match 'DISASSOCIATED|IMPORTED') {
             throw "Preflight failure reached destructive migration:`n$output"
         }
         if ($caseValue -in @('parent-failure','read-failure','backup-collision','export-failure') -and
@@ -295,23 +338,36 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:2' -or $output -notmatch 'RETURNED:True') {
                 throw "Success case failed under ${preferenceValue}:`n$output"
             }
-        } elseif ($caseValue -eq 'hive-unavailable') {
+        } elseif ($caseValue -in @('hive-unavailable','invalid-sid','comma-sids','range-sid','missing-profile','missing-ntuser')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:0' -or
                 $output -notmatch 'RETURNED:False' -or $output -match 'IMPORTED') {
                 throw "Unavailable hives were not reported as incomplete migration:`n$output"
+            }
+            if ($output -notmatch 'No eligible targets') { throw "No-eligible guard missing:`n$output" }
+        } elseif ($caseValue -eq 'mixed-targets') {
+            if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:False' -or
+                $output -notmatch 'INSTALLS:1' -or $output -notmatch 'DISASSOCIATED' -or
+                $output -notmatch "Ineligible target 'not-a-sid'" -or $output -notmatch 'ProfileImagePath is missing') {
+                throw "Mixed target eligibility was not best-effort:`n$output"
+            }
+        } elseif ($caseValue -eq 'whatif') {
+            if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:True' -or
+                $output -notmatch '\[WHATIF\]' -or $output -match '(?m)^IMPORTED\r?$|^DISASSOCIATED\r?$') {
+                throw "WhatIf mutated host operations:`n$output"
             }
         } elseif ($caseValue -eq 'export-failure') {
             if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:False' -or $output -notmatch 'BACKUPS_REMAINING:0') {
                 throw "Export failure handling failed:`n$output"
             }
         } elseif ($caseValue -like 'driver-*') {
-            $failedCount = if ($caseValue -eq 'driver-service-failure') { 0 } else { 1 }
-            $succeededCount = if ($caseValue -eq 'driver-service-failure') { 2 } else { 1 }
+            $failedCount = if ($caseValue -eq 'driver-service-failure') { 0 } elseif ($caseValue -in @('driver-no-targets','driver-mixed-targets')) { 2 } else { 1 }
+            $succeededCount = 2 - $failedCount
             $imports = switch ($caseValue) {
                 'driver-failure' { 2 } 'driver-import-failure' { 3 }
                 'driver-query-exception' { 2 } 'driver-pair-exception' { 2 }
                 'driver-hive-check-exception' { 3 } 'driver-mount-exception' { 3 }
-                'driver-import-unload-exception' { 3 } 'driver-boundary-exception' { 2 } default { 4 }
+                'driver-import-unload-exception' { 3 } 'driver-boundary-exception' { 2 }
+                'driver-no-targets' { 0 } 'driver-mixed-targets' { 2 } default { 4 }
             }
             if ($exitCode -ne 1 -or $output -match 'AFTER_DRIVER|RETURNED:' -or
                 $output -notmatch 'RESTARTED:DeviceAssociationService' -or
@@ -341,7 +397,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         } else {
             if ($exitCode -ne 0 -or $output -match 'IMPORTED' -or
                 $output -match 'RETURNED:True' -or
-                $output -notmatch 'RETURNED:False' -or $output -notmatch 'PREPARATION_FAILED:True' -or
+                $output -notmatch 'RETURNED:False' -or
                 $output -notmatch 'ERROR: Private') {
                 throw "$caseValue/$preferenceValue did not fail closed:`n$output"
             }
@@ -421,7 +477,6 @@ $script:ancestorAcl.SetSecurityDescriptorSddlForm('O:SYG:SYD:PAI(A;;FA;;;SY)')
 foreach ($sddl in @(
     'O:SYG:SYD:PAI(A;;GA;;;BU)',
     'O:SYG:SYD:PAI(A;;FRFX;;;BU)',
-    'O:SYG:SYD:PAI(A;OICIIO;GA;;;BU)',
     'O:BUG:SYD:PAI(A;;FA;;;SY)',
     'O:SYG:SYD:NO_ACCESS_CONTROL'
 )) {
@@ -433,6 +488,26 @@ foreach ($sddl in @(
     if (-not $rejected) { throw "Unsupported SystemTemp ACL accepted: $sddl" }
     $checks++
 }
+$script:testAcl.SetSecurityDescriptorSddlForm('O:SYG:SYD:PAI(A;;FA;;;SY)')
+foreach ($sddl in @(
+    'O:SYG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;OICIIO;GA;;;CO)',
+    'O:SYG:SYD:PAI(A;;FA;;;SY)(A;OICIIO;GA;;;BU)'
+)) {
+    $script:testAcl.SetSecurityDescriptorSddlForm($sddl)
+    Assert-SystemTempParent -Path $systemTemp
+    $checks++
+}
+# Observed Entra-device descriptor: applicable primary-user FullControl is a
+# deliberate policy rejection, not automatically trusted through group lookup.
+$script:testAcl.SetSecurityDescriptorSddlForm(
+    'O:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-12-1-111-222-333-444)')
+$rejected = $false
+try { Assert-SystemTempParent -Path $systemTemp }
+catch {
+    $rejected = $_.Exception.Message -match 'Ask your administrator.*no ACL was changed'
+}
+if (-not $rejected) { throw 'Observed Entra ACL did not produce actionable policy rejection' }
+$checks++
 $script:testAcl.SetSecurityDescriptorSddlForm('O:SYG:SYD:PAI(A;;FA;;;SY)')
 function Get-Item {
     return [pscustomobject]@{ PSIsContainer = $true; Attributes = [IO.FileAttributes]::ReparsePoint }
@@ -456,4 +531,98 @@ try { Assert-SystemTempParent -Path $systemTemp }
 catch { $rejected = $true }
 if (-not $rejected) { throw 'Missing SystemTemp accepted' }
 $checks++
+
+# Exercise the real managed directory factory on an isolated parent. Substitute
+# only its parent and owner (the available token is not SYSTEM), not ACL creation.
+$factory = $ast.FindAll({
+    param($node)
+    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'New-PrivateStagingDirectory'
+}, $false).Extent.Text
+$factoryFixture = Join-Path ([IO.Path]::GetTempPath()) "UPConvert-factory-$([Guid]::NewGuid().ToString('N'))"
+$null = [IO.Directory]::CreateDirectory($factoryFixture)
+$factoryMarker = Join-Path $factoryFixture '.upconvert-test'
+[IO.File]::WriteAllText($factoryMarker, 'UPConvert factory fixture')
+function Assert-SystemTempParent {
+    param([string]$Path)
+    if ($Path -ne $factoryFixture) { throw 'Factory escaped isolated parent' }
+}
+try {
+    $testFactory = $factory.Replace(
+        '$parent = [IO.Path]::Combine($windows, ''SystemTemp'')', '$parent = $factoryFixture').Replace(
+        '$owner = [Security.Principal.SecurityIdentifier]::new(''S-1-5-18'')',
+        '$owner = [Security.Principal.WindowsIdentity]::GetCurrent().User')
+    . ([scriptblock]::Create($testFactory))
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $isAdmin = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+    if ($isAdmin) {
+        $whatIfPath = New-PrivateStagingDirectory -WhatIfMode
+        $whatIfAcl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $whatIfPath
+        if ($whatIfAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $identity.User.Value) {
+            throw 'WhatIf factory did not use the elevated caller owner'
+        }
+    } else {
+        $rejected = $false
+        try { New-PrivateStagingDirectory -WhatIfMode }
+        catch { $rejected = $_.Exception.Message -match 'elevated administrator' }
+        if (-not $rejected) { throw 'WhatIf factory accepted a nonelevated caller' }
+    }
+    $checks++
+    $created = @(New-PrivateStagingDirectory; New-PrivateStagingDirectory)
+    if ($created.Count -ne 2 -or $created[0] -eq $created[1]) { throw 'Factory reused a directory' }
+    foreach ($path in $created) {
+        $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $path -ErrorAction Stop
+        $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+        if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 2 -or
+            $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne
+                [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {
+            throw 'Real directory ACL protection/owner differs from requested descriptor'
+        }
+        foreach ($rule in $rules) {
+            if ($rule.IsInherited -or $rule.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544') -or
+                $rule.AccessControlType -ne 'Allow' -or $rule.FileSystemRights -ne 'FullControl' -or
+                $rule.InheritanceFlags -ne 'ContainerInherit, ObjectInherit') {
+                throw 'Real directory grants differ from SYSTEM/Admin-only inheritable ACL'
+            }
+        }
+        $checks++
+    }
+    $collisionFactory = $testFactory.Replace(
+        '$path = [IO.Path]::Combine($parent, "UPConvert-$([Guid]::NewGuid().ToString(''N''))")',
+        '$path = $created[0]')
+    . ([scriptblock]::Create($collisionFactory))
+    $rejected = $false
+    try { New-PrivateStagingDirectory }
+    catch { $rejected = $_.Exception.Message -match 'collision' }
+    if (-not $rejected) { throw 'Factory accepted an existing directory' }
+    $checks++
+} finally {
+    if ([IO.File]::Exists($factoryMarker) -and
+        [IO.File]::ReadAllText($factoryMarker) -eq 'UPConvert factory fixture') {
+        foreach ($child in [IO.Directory]::GetDirectories($factoryFixture)) {
+            try {
+                # Only this marked fixture's ACL is changed for owner cleanup;
+                # production/SystemTemp ACLs are never modified.
+                $info = [IO.DirectoryInfo]::new($child)
+                if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                    $cleanupAcl = $info.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+                } else {
+                    $cleanupAcl = [IO.FileSystemAclExtensions]::GetAccessControl(
+                        $info, [Security.AccessControl.AccessControlSections]::Access)
+                }
+                $cleanupAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                    [Security.Principal.WindowsIdentity]::GetCurrent().User, 'FullControl', 'Allow'))
+                if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                    $info.SetAccessControl($cleanupAcl)
+                } else { [IO.FileSystemAclExtensions]::SetAccessControl($info, $cleanupAcl) }
+                [IO.Directory]::Delete($child, $false)
+            } catch { Write-Warning "Factory fixture cleanup failed for '$child': $_" -WarningAction Continue }
+        }
+        if ([IO.Directory]::GetDirectories($factoryFixture).Count -eq 0) {
+            [IO.File]::Delete($factoryMarker)
+            [IO.Directory]::Delete($factoryFixture, $false)
+        }
+    } else { Write-Warning "Refusing factory fixture cleanup: $factoryFixture" }
+}
 Write-Host "Passed $checks focused staging checks on PowerShell $($PSVersionTable.PSVersion)."
