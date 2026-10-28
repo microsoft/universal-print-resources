@@ -17,7 +17,8 @@ Exit 1 therefore does not imply nothing changed or that retrying is safe.
 If none are eligible, the per-system printer stays unchanged. Failures after
 changes begin can leave a partial migration; there is no automatic rollback.
 Review the printed outcomes and backup paths. Conversion exits 1 on reported
-failures, 0 otherwise. DeviceAssociationService and Spooler restart unless skipped.
+failures, 0 otherwise. DeviceAssociationService and Spooler restart unless skipped,
+but only after a disassociation or import attempt, including failed attempts.
 .PARAMETER Detect
 Only detect per-system UP printers. Exit 0 = found; exit 1 = none found.
 .PARAMETER UserSIDs
@@ -1014,6 +1015,7 @@ function Convert-OnePrinter {
                 Write-Host "  Running: $pairtool -disassociate `"MCP#$ShareId`""
                 # Capture stdout/stderr so it doesn't leak into the function's pipeline output
                 # (otherwise pairtool's text lines get returned alongside our [pscustomobject] result).
+                $script:printerMutationAttempted = $true
                 $pairResult = Invoke-ConversionNative -Command $pairtool -Arguments @('-disassociate', "MCP#$ShareId")
                 $rc = $pairResult.ExitCode
                 foreach ($line in $pairResult.Output) {
@@ -1058,7 +1060,10 @@ function Convert-OnePrinter {
                     # Catch only this import, not surrounding hive/native commands.
                     # An invocation exception means uncertain/failed completion,
                     # not evidence of rollback; stderr alone is handled locally.
-                    try { $import = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('import', $regFile) }
+                    try {
+                        $script:printerMutationAttempted = $true
+                        $import = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('import', $regFile)
+                    }
                     catch {
                         Write-Host "    ERROR: Import failed or its completion is uncertain for ${sid}: $_. Payload: $regFile" -ForegroundColor Red
                         $errors += "import exception for ${sid}: $_"
@@ -1149,6 +1154,7 @@ if ($targetSIDs.Count -eq 0) {
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $results = @()
 $restartFailed = $false
+$script:printerMutationAttempted = $false
 try {
     foreach ($sid in $shareIdsToConvert) {
         # Force scalar capture: if Convert-OnePrinter ever leaks stdout, $r could become an array.
@@ -1176,9 +1182,9 @@ try {
 }
 finally {
     # --- Restart services (once) ---------------------------------------------
-    # Finalize earlier conversions even if a later printer fails or a native/hive
-    # exception escapes. Do not silently abandon requested service restarts.
-    if (-not $SkipRestart -and -not $WhatIfMode) {
+    # An attempted native mutation may have partially completed even if it threw.
+    # Preflight-only failures do not warrant interrupting other users' print jobs.
+    if ($script:printerMutationAttempted -and -not $SkipRestart -and -not $WhatIfMode) {
         Write-Host ""
         Write-Host "Restarting services..." -ForegroundColor Cyan
         foreach ($svc in @('DeviceAssociationService', 'Spooler')) {

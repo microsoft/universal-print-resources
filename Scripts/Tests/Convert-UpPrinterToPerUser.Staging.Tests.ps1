@@ -75,7 +75,7 @@ if ($Case) {
         function New-PrivateStagingDirectory {
             # Only the production parent/ACL creation is replaced. File creation,
             # parser, registry builder, and cleanup remain production code.
-            if ($Case -eq 'parent-failure') { Write-Error 'Injected unsafe staging parent' }
+            if ($Case -in @('parent-failure','driver-staging-only-failure')) { Write-Error 'Injected unsafe staging parent' }
             $script:runCount++
             $script:stage = Join-Path $fixture "stage-$script:runCount"
             $null = [IO.Directory]::CreateDirectory($stage)
@@ -95,7 +95,7 @@ if ($Case) {
                 }
                 'query' {
                     $script:queryCount++
-                    if ($Case -in @('driver-enumeration-failure','printer-enumeration-failure','query-denied')) {
+                    if ($Case -in @('driver-enumeration-failure','printer-enumeration-failure','query-denied','driver-query-only-failure')) {
                         $global:LASTEXITCODE = 1
                         return 'ERROR: Access is denied.'
                     }
@@ -115,7 +115,7 @@ if ($Case) {
                 }
                 'export' {
                     Write-Host 'EXPORTED'
-                    if ($Case -eq 'export-failure') {
+                    if ($Case -in @('export-failure','driver-export-only-failure')) {
                         [IO.File]::WriteAllText($args[2], 'partial')
                         $global:LASTEXITCODE = 1
                         return
@@ -137,9 +137,9 @@ if ($Case) {
                     if ($payload -notmatch 'HKEY_USERS\\S-1-5-21-1-2-3-100[12]\\') { throw 'Wrong user destination' }
                     if ($script:builtContents -cnotcontains $payload) { throw 'Imported payload differs from unchanged builder output' }
                     $script:importCount++
-                    if ($Case -in @('import-failure','driver-import-failure','import-exception','driver-import-unload-exception','driver-auto-import-error') -and $script:importCount -eq 1) {
+                    if ($Case -in @('import-failure','driver-import-failure','import-exception','driver-import-unload-exception','driver-auto-import-error','driver-import-only-exception') -and $script:importCount -eq 1) {
                         Write-Host 'IMPORT_FAILED'
-                        if ($Case -in @('import-exception','driver-import-unload-exception')) { throw 'Injected uncertain native import completion' }
+                        if ($Case -in @('import-exception','driver-import-unload-exception','driver-import-only-exception')) { throw 'Injected uncertain native import completion' }
                         $global:LASTEXITCODE = 5
                         return
                     }
@@ -263,7 +263,7 @@ if ($Case) {
         function Invoke-TestPairtool {
             Write-Host 'DISASSOCIATED'
             $script:pairCount++
-            if ($Case -eq 'driver-pair-exception' -and $script:pairCount -eq 1) {
+            if ($Case -in @('driver-pair-exception','driver-pair-only-exception') -and $script:pairCount -eq 1) {
                 throw 'Injected first-printer disassociation exception'
             }
             $global:LASTEXITCODE = 0
@@ -335,6 +335,7 @@ if ($Case) {
         }
         if ($Case -in @('mixed-targets','driver-mixed-targets')) { $arguments.TargetSIDs += 'not-a-sid' }
         if ($Case -eq 'driver-no-targets') { $arguments.TargetSIDs = @('not-a-sid') }
+        if ($Case -eq 'driver-empty-sid') { $arguments.TargetSIDs = @('') }
         if ($Case -eq 'whatif') { $arguments.WhatIfMode = $true }
         if ($Case -eq 'driver-auto-invalid-sid') { $arguments.TargetSIDs[1] = 'not-a-sid' }
         if ($Case -eq 'driver-boundary-exception') {
@@ -370,6 +371,13 @@ if ($Case) {
             $WhatIfMode = ($Case -eq 'driver-auto-whatif')
             $SkipDisassociate = $false
             $SkipRestart = $false
+            if ($Case -in @('driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart')) {
+                $shareIdsToConvert = @($share)
+                $targetSIDs = @($arguments.TargetSIDs[0])
+                $UserSIDs = $targetSIDs
+                $SkipDisassociate = ($Case -in @('driver-import-only-exception','driver-import-only-success'))
+                $SkipRestart = ($Case -eq 'driver-skip-restart')
+            }
             $results = @()
             $statements = @($ast.EndBlock.Statements)
             $start = @($statements | Where-Object {
@@ -487,7 +495,9 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-auto-missing-key','driver-explicit-missing-key',
         'driver-auto-missing-value','driver-explicit-missing-value','driver-auto-provider-denied',
         'driver-auto-zero-profile','driver-explicit-zero-profile',
-        'driver-auto-qword-profile','driver-explicit-qword-profile','directory-ntuser','early-whatif-elevation')) {
+        'driver-auto-qword-profile','driver-explicit-qword-profile','directory-ntuser','early-whatif-elevation',
+        'driver-staging-only-failure','driver-query-only-failure','driver-export-only-failure','driver-empty-sid',
+        'driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -504,6 +514,8 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             'duplicates' { 2 } 'duplicates-ineligible' { 1 }
             'driver-duplicates' { 4 } 'driver-duplicates-ineligible' { 2 }
             'expanded-profile' { 2 }
+            'driver-pair-only-exception' { 1 } 'driver-import-only-exception' { 1 }
+            'driver-import-only-success' { 1 } 'driver-skip-restart' { 1 }
             'driver-auto-stale' { 2 } 'driver-explicit-stale' { 2 }
             'driver-auto-missing-ntuser' { 2 } 'driver-explicit-missing-ntuser' { 2 }
             'driver-auto-query-error' { 2 } 'driver-auto-hive-error' { 2 }
@@ -521,13 +533,15 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             throw "$caseValue/$preferenceValue retained unexpected payloads:`n$output"
         }
         $policyCase = $caseValue -match '^driver-(?:auto|explicit)-'
-        $postDisassociation = ($caseValue -like 'driver-*' -and -not $policyCase -and $caseValue -notin @('driver-no-targets','driver-mixed-targets','driver-duplicates-ineligible','driver-enumeration-failure')) -or $caseValue -in @('success', 'mounted-success', 'duplicates','expanded-profile',
+        $restartCase = $caseValue -in @('driver-staging-only-failure','driver-query-only-failure','driver-export-only-failure','driver-empty-sid',
+            'driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart')
+        $postDisassociation = ($caseValue -like 'driver-*' -and -not $policyCase -and -not $restartCase -and $caseValue -notin @('driver-no-targets','driver-mixed-targets','driver-duplicates-ineligible','driver-enumeration-failure')) -or $caseValue -in @('success', 'mounted-success', 'duplicates','expanded-profile',
             'import-failure', 'import-exception')
         if ($postDisassociation) {
             if ($output -notmatch '(?s)EXPORTED.*BUILT.*BUILT.*DISASSOCIATED.*HIVE_CHECKED') {
                 throw "Payloads were not fully prepared before disassociation:`n$output"
             }
-        } elseif (-not $policyCase -and $caseValue -notin @('mixed-targets','driver-mixed-targets','duplicates-ineligible','driver-duplicates-ineligible') -and $output -match 'DISASSOCIATED|IMPORTED') {
+        } elseif (-not $policyCase -and -not $restartCase -and $caseValue -notin @('mixed-targets','driver-mixed-targets','duplicates-ineligible','driver-duplicates-ineligible') -and $output -match 'DISASSOCIATED|IMPORTED') {
             throw "Preflight failure reached destructive migration:`n$output"
         }
         if ($caseValue -in @('parent-failure','read-failure','backup-collision','export-failure') -and
@@ -564,6 +578,8 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             }
             if ($caseValue -eq 'driver-auto-whatif') {
                 if ($output -match 'RESTARTED:' -or $output -notmatch '\[WHATIF\]') { throw "WhatIf policy case mutated host operations:`n$output" }
+            } elseif ($pairs -eq 0 -and $imports -eq 0) {
+                if ($output -match 'RESTARTED:') { throw "Preflight-only policy case restarted services:`n$output" }
             } elseif ($output -notmatch 'RESTARTED:DeviceAssociationService' -or $output -notmatch 'RESTARTED:Spooler') {
                 throw "Policy case did not finalize:`n$output"
             }
@@ -664,6 +680,21 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:False' -or $output -notmatch 'BACKUPS_REMAINING:0') {
                 throw "Export failure handling failed:`n$output"
             }
+        } elseif ($caseValue -in @('driver-staging-only-failure','driver-query-only-failure','driver-export-only-failure','driver-empty-sid')) {
+            if ($exitCode -ne 1 -or $output -match 'RESTARTED:|DISASSOCIATED|IMPORTED' -or
+                $output -notmatch 'Failed\s+:\s+2') {
+                throw "Preflight-only failures restarted services or lost failure status:`n$output"
+            }
+        } elseif ($caseValue -in @('driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart')) {
+            $expectedExit = if ($caseValue -like '*exception') { 1 } else { 0 }
+            $expectedRestarts = if ($caseValue -eq 'driver-skip-restart') { 0 } else { 2 }
+            if ($exitCode -ne $expectedExit -or
+                ([regex]::Matches($output, 'RESTARTED:')).Count -ne $expectedRestarts -or
+                ($caseValue -like '*import-only*' -and $output -match 'DISASSOCIATED') -or
+                ($caseValue -eq 'driver-pair-only-exception' -and $output -notmatch 'Injected first-printer disassociation exception') -or
+                ($caseValue -eq 'driver-import-only-exception' -and $output -notmatch 'Injected uncertain native import completion')) {
+                throw "Mutation attempt/SkipRestart finalization failed:`n$output"
+            }
         } elseif ($caseValue -like 'driver-*') {
             $failedCount = if ($caseValue -eq 'driver-service-failure') { 0 } elseif ($caseValue -in @('driver-no-targets','driver-mixed-targets')) { 2 } else { 1 }
             $succeededCount = 2 - $failedCount
@@ -675,8 +706,10 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 'driver-no-targets' { 0 } 'driver-mixed-targets' { 2 } default { 4 }
             }
             if ($exitCode -ne 1 -or $output -match 'AFTER_DRIVER|RETURNED:' -or
-                $output -notmatch 'RESTARTED:DeviceAssociationService' -or
-                $output -notmatch 'RESTARTED:Spooler' -or $output -notmatch "Failed\s+:\s+$failedCount" -or
+                ($caseValue -ne 'driver-no-targets' -and
+                    ($output -notmatch 'RESTARTED:DeviceAssociationService' -or $output -notmatch 'RESTARTED:Spooler')) -or
+                ($caseValue -eq 'driver-no-targets' -and $output -match 'RESTARTED:') -or
+                $output -notmatch "Failed\s+:\s+$failedCount" -or
                 $output -notmatch "Succeeded\s+:\s+$succeededCount" -or
                 ([regex]::Matches($output, '(?m)^IMPORTED\r?$')).Count -ne $imports -or
                 $output -notmatch 'backup=') {
