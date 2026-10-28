@@ -3,41 +3,24 @@
 Detect or migrate legacy per-system Universal Print printers to per-user installs.
 .DESCRIPTION
 Detection requires no elevation. Conversion requires NT AUTHORITY\SYSTEM on
-Windows PowerShell 5.1 or PowerShell 7. From an administrator prompt, use your
-approved Sysinternals PsExec installation: psexec.exe -s -i powershell.exe
-Then run this script in that SYSTEM prompt (or use pwsh.exe for PowerShell 7).
+Windows PowerShell 5.1 or PowerShell 7. To open a SYSTEM prompt, run
+psexec.exe -s -i powershell.exe from an administrator prompt using your approved
+Sysinternals PsExec installation (or substitute pwsh.exe for PowerShell 7).
 
-For each printer, export/read its DAF backup and check target SID syntax and a
-loaded hive or existing NTUSER.DAT, without loading hives during preflight.
-Report/skip invalid or unavailable targets and prepare eligible users' unchanged
-payloads before disassociation. If none are eligible, or a payload cannot be
-prepared, leave that system printer in place. Then check/load user hives
-and import prepared payloads, skipping unavailable hives with a reported failure.
-Report per-user failures, finish other users/printers, and restart
-DeviceAssociationService and Spooler once unless explicitly skipped.
-
-This is not transactional: actual disassociation, hive reloading, or imports can
-still fail after changes begin. Failed imports may themselves be partial.
-Inspect the printed per-user outcomes and backup paths; registry export alone
-does not undo disassociation. Conversion exits 1 on reported failures, 0 otherwise.
+Use ShareId for one printer or AllUPPrinters for all, with your TenantId.
+Conversion skips invalid or unavailable users and continues eligible users.
+If none are eligible, the per-system printer stays unchanged. Failures after
+changes begin can leave a partial migration; there is no automatic rollback.
+Review the printed outcomes and backup paths. Conversion exits 1 on reported
+failures, 0 otherwise. DeviceAssociationService and Spooler restart unless skipped.
 .PARAMETER Detect
 Only detect per-system UP printers. Exit 0 = found; exit 1 = none found.
-.PARAMETER ShareId
-Share GUID of the single per-system printer to convert.
-.PARAMETER AllUPPrinters
-Convert all per-system UP printers found in the DAF store.
-.PARAMETER TenantId
-Tenant GUID written to each user's DAF entry.
 .PARAMETER UserSIDs
-Restrict conversion to these profiles; otherwise target all real user profiles.
+Target these user SIDs; omit to target all real user profiles.
 .PARAMETER WhatIfMode
 Export backups, prepare files, and check/load/unload hives, but do not
-disassociate, import, or restart services. Requires protected staging access;
-this is not a read-only inspection mode.
-.PARAMETER SkipDisassociate
-Skip pairtool, for example when the per-system AEP is already gone.
-.PARAMETER SkipRestart
-Leave final service restarts to the operator.
+disassociate, import, or restart services. Requires SYSTEM or an elevated
+administrator. This is not read-only, and temporary backups remain afterward.
 .EXAMPLE
 .\Convert-UpPrinterToPerUser.ps1 -Detect
 .EXAMPLE
@@ -45,43 +28,13 @@ Leave final service restarts to the operator.
 .EXAMPLE
 .\Convert-UpPrinterToPerUser.ps1 -AllUPPrinters -TenantId '<tenant-guid>' -WhatIfMode
 .NOTES
-BackupDir was removed. Staging is a fresh private child of the existing Windows
-SystemTemp directory, derived from the OS Windows special folder, not TEMP/TMP
-or SystemTemp environment overrides. Missing/unsafe SystemTemp fails closed:
-no provisioning, ACL repair, or fallback. Only SYSTEM/Administrators/
-TrustedInstaller owners and applicable allow principals are supported on the
-parent; inherit-only ACEs do not apply and private children block inheritance.
-An extra named-user administrator grant is deliberately not resolved through
-group membership. If rejected, have your administrator review that specific
-parent ACL against the supported policy; this script never rewrites it.
-
-Before using SystemTemp, validate its fixed ancestry top-down from the volume
-root: ordinary directories, trusted owners and canonical non-null DACLs with
-no untrusted replacement/reparse/security-changing grants. Normal ancestor
-read/traverse and create-sibling rights are allowed. SystemTemp has the stricter
-trusted-allow-principals policy. No ACL repair, native DLLs or handle pinning.
-Administrators, SYSTEM and TrustedInstaller remain trusted; this does not defend
-against privileged actors changing the checked path during conversion.
-
-Complete files remain in each printer's printed SYSTEM/Admins-only directory.
-For WhatIf, an elevated administrator may own the private directory instead of
-SYSTEM; its DACL remains SYSTEM/Admins-only. Conversion still requires SYSTEM.
-These are sensitive temporary backups, not durable archives; OS cleanup or
-maintenance may remove them. Arrange trusted archival storage separately.
-Remove specific run directories when no longer needed. Never automatically
-import user-editable backup copies as SYSTEM.
-
-Windows PowerShell 5.1 can turn redirected native stderr into NativeCommandError.
-Native calls therefore capture output under a local Continue preference and use
-the exit code, not stderr alone, to decide success. Caller preferences are
-unchanged outside that boundary; invocation exceptions remain failures.
-Unexpected user/printer errors are reported as failed or uncertain outcomes,
-without retrying ambiguous imports. Continue remaining users/printers and attempt
-requested service restarts in finally; this is not a recovery transaction.
-
-Editing invalidates the historical Authenticode block. Obtain an authorized new
-signature and verify with Get-AuthenticodeSignature before signed-policy deployment.
-Safe regression checks: Scripts\Tests\Convert-UpPrinterToPerUser.Staging.Tests.ps1.
+Files use a private SYSTEM/Administrators-only directory per printer under
+Windows SystemTemp. BackupDir is no longer supported. Missing or unsupported
+staging permissions stop preparation without changing permissions or falling
+back to another location; ask your administrator to review the reported error.
+Retained files are sensitive temporary backups, not durable archives: OS cleanup
+may remove them. Arrange secure archival storage if needed, and remove the
+printed staging directories when no longer required.
 #>
 
 [CmdletBinding(DefaultParameterSetName = 'ConvertOne')]
