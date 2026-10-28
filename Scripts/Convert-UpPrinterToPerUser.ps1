@@ -3,7 +3,9 @@
 Detect or migrate legacy per-system Universal Print printers to per-user installs.
 .DESCRIPTION
 Detection requires no elevation. Conversion requires NT AUTHORITY\SYSTEM on
-Windows PowerShell 5.1 or PowerShell 7. To open a SYSTEM prompt, run
+Windows PowerShell 5.1 or PowerShell 7. On 64-bit Windows, both modes require
+64-bit PowerShell to avoid filesystem and registry redirection.
+To open a SYSTEM prompt, run
 psexec.exe -s -i powershell.exe from an administrator prompt using your approved
 Sysinternals PsExec installation (or substitute pwsh.exe for PowerShell 7).
 
@@ -116,6 +118,11 @@ param (
     [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Skip the service restart at the end.")]
     [switch]$SkipRestart
 )
+
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    Write-Host 'ERROR: Run this script in 64-bit PowerShell on 64-bit Windows to avoid filesystem and registry redirection.' -ForegroundColor Red
+    exit 1
+}
 
 # --- Detect mode (no elevation required) --------------------------------------
 

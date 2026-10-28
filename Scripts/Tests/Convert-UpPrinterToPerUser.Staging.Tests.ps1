@@ -35,6 +35,16 @@ if ($Case) {
     [IO.File]::WriteAllText($marker, 'UPConvert isolated test fixture')
     [IO.File]::WriteAllText((Join-Path $fixture 'NTUSER.DAT'), 'isolated non-hive fixture')
     try {
+        if ($Case -eq 'early-architecture') {
+            $guard = $ast.EndBlock.Statements[0]
+            if ($guard -isnot [Management.Automation.Language.IfStatementAst] -or
+                $guard.Clauses[0].Item1.Extent.Text -ne '[Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess') {
+                throw 'Architecture guard must precede detection and conversion'
+            }
+            $guardText = $guard.Extent.Text.Replace($guard.Clauses[0].Item1.Extent.Text, '$true')
+            . ([scriptblock]::Create($guardText))
+            throw 'Unsupported architecture guard did not exit'
+        }
         if ($Case -eq 'early-whatif-elevation') {
             $guard = @($ast.EndBlock.Statements | Where-Object {
                 $_ -is [Management.Automation.Language.IfStatementAst] -and
@@ -512,7 +522,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-staging-only-failure','driver-query-only-failure','driver-export-only-failure','driver-empty-sid',
         'driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart',
         'driver-auto-reparse','driver-explicit-reparse','driver-auto-nonfixed','driver-explicit-nonfixed',
-        'driver-auto-inspection-error','driver-explicit-inspection-error')) {
+        'driver-auto-inspection-error','driver-explicit-inspection-error','early-architecture')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -575,7 +585,12 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             $output -match 'HIVE_MOUNTED\s+HIVE_CHECKED') {
             throw "Successfully mounted hive was unnecessarily reopened:`n$output"
         }
-        if ($caseValue -eq 'early-whatif-elevation') {
+        if ($caseValue -eq 'early-architecture') {
+            if ($exitCode -ne 1 -or $output -notmatch 'ERROR: Run this script in 64-bit PowerShell' -or
+                $output -match 'QUERIES:\d|EXPORTED|DISASSOCIATED|IMPORTED') {
+                throw "Architecture entry-point diagnostic failed:`n$output"
+            }
+        } elseif ($caseValue -eq 'early-whatif-elevation') {
             if ($exitCode -ne 1 -or $output -notmatch 'ERROR: WhatIf preparation requires SYSTEM or an elevated administrator' -or
                 $output -match 'QUERIES:\d|EXPORTED|DISASSOCIATED|IMPORTED') {
                 throw "WhatIf entry-point elevation diagnostic failed:`n$output"
