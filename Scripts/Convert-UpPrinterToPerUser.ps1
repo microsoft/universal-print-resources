@@ -1208,6 +1208,8 @@ finally {
     } elseif ($SkipRestart) {
         Write-Host ""
         Write-Host "Skipping service restart (-SkipRestart)." -ForegroundColor Yellow
+    } elseif (-not $WhatIfMode -and -not $script:printerMutationAttempted) {
+        Write-Host "Skipping service restart: no disassociation or import was attempted." -ForegroundColor DarkGray
     }
 }
 
