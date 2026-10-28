@@ -114,6 +114,12 @@ if ($Case) {
             param([string]$UserSID)
             Write-Host 'HIVE_CHECKED'
             $script:hiveChecks++
+            if ($Case -like '*duplicate*') {
+                if ($UserSID -cnotin @('S-1-5-21-1-2-3-1001', 'S-1-5-21-1-2-3-1002')) {
+                    throw "Noncanonical hive lookup: $UserSID"
+                }
+                if ($Case -like '*ineligible' -and $UserSID -eq 'S-1-5-21-1-2-3-1001') { return $false }
+            }
             if ($Case -eq 'driver-hive-check-exception' -and $script:hiveChecks -eq 1) {
                 throw 'Injected first-user hive-check exception'
             }
@@ -127,6 +133,7 @@ if ($Case) {
         }
         function Get-ProfileImagePath {
             param([string]$UserSID)
+            if ($Case -like '*duplicate*ineligible' -and $UserSID -eq 'S-1-5-21-1-2-3-1001') { return $null }
             if ($Case -in @('hive-unavailable','missing-profile') -or
                 ($Case -in @('mixed-targets','driver-mixed-targets') -and $UserSID -match '1002$')) { return $null }
             if ($Case -eq 'missing-ntuser') { return [IO.Path]::Combine($fixture,'absent') }
@@ -180,6 +187,7 @@ if ($Case) {
         function Build-PerUserRegContent {
             param ($UserSID, $ShareId, $InstanceGuid, $TenantId, $PerSystem)
             Write-Host 'BUILT'
+            Write-Host "BUILT_FOR:$UserSID"
             if ($Case -in @('build-failure', 'mounted-build-failure') -or
                 ($Case -eq 'driver-failure' -and $ShareId -ne $share)) {
                 Write-Error 'Injected preparation failure'
@@ -213,6 +221,10 @@ if ($Case) {
         if ($Case -eq 'invalid-sid') { $arguments.TargetSIDs = @('not-a-sid') }
         if ($Case -eq 'comma-sids') { $arguments.TargetSIDs = @('S-1-5-21-1-2-3-1001,S-1-5-21-1-2-3-1002') }
         if ($Case -eq 'range-sid') { $arguments.TargetSIDs = @('S-1-5-21-1-2-3-4294967296') }
+        if ($Case -like '*duplicate*') {
+            $arguments.TargetSIDs = @('s-1-5-21-1-2-3-01001', 'S-1-5-21-1-2-3-1001',
+                'S-1-5-21-1-2-3-1002', 's-1-5-21-1-2-3-1001', 'S-1-5-21-1-2-3-01002')
+        }
         if ($Case -in @('mixed-targets','driver-mixed-targets')) { $arguments.TargetSIDs += 'not-a-sid' }
         if ($Case -eq 'driver-no-targets') { $arguments.TargetSIDs = @('not-a-sid') }
         if ($Case -eq 'whatif') { $arguments.WhatIfMode = $true }
@@ -229,6 +241,7 @@ if ($Case) {
         if ($Case -like 'driver-*') {
             $shareIdsToConvert = @($share, '22222222-2222-3333-4444-555555555555')
             $targetSIDs = $arguments.TargetSIDs
+            $UserSIDs = $arguments.TargetSIDs
             $TenantId = $arguments.TenantId
             $WhatIfMode = $false
             $SkipDisassociate = $false
@@ -236,8 +249,12 @@ if ($Case) {
             $results = @()
             $statements = @($ast.EndBlock.Statements)
             $start = @($statements | Where-Object {
-                $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
-                $_.Left.Extent.Text -eq '$timestamp'
+                if ($Case -like '*duplicate*') {
+                    $_.Extent.Text -eq 'Write-Host "Resolving target users..." -ForegroundColor Cyan'
+                } else {
+                    $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
+                    $_.Left.Extent.Text -eq '$timestamp'
+                }
             })
             if ($start.Count -ne 1) { throw 'Could not identify production driver assignment' }
             $driver = ($statements | Where-Object {
@@ -245,6 +262,7 @@ if ($Case) {
             } | ForEach-Object { $_.Extent.Text }) -join "`r`n"
             . ([scriptblock]::Create($driver))
             Write-Host 'AFTER_DRIVER'
+            exit 0
         }
         $result = Convert-OnePrinter @arguments
         Write-Host "RETURNED:$($result.Success)"
@@ -252,6 +270,7 @@ if ($Case) {
         Write-Host "PREFERENCE_AFTER:$ErrorActionPreference"
     }
     finally {
+        Write-Host "QUERIES:$script:queryCount"
         if ([IO.File]::Exists($marker) -and
             [IO.File]::ReadAllText($marker) -eq 'UPConvert isolated test fixture') {
             $remaining = @()
@@ -274,6 +293,13 @@ if ($Case) {
 
 $runtime = (Get-Process -Id $PID).Path
 $checks = 0
+$entraTargets = @(Get-UniqueTargetSIDs -TargetSIDs @(
+    's-1-12-1-01-2-3-4294967295', 'S-1-12-1-1-2-3-4294967295',
+    'S-1-12-1-4-5-6-7') 6>$null)
+if (($entraTargets -join ',') -cne 'S-1-12-1-1-2-3-4294967295,S-1-12-1-4-5-6-7') {
+    throw 'Entra target canonicalization/order failed'
+}
+$checks++
 foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     foreach ($exit in @(0, 7)) {
         $savedPreference = $ErrorActionPreference
@@ -298,7 +324,8 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-mount-exception', 'driver-unload-exception', 'driver-import-unload-exception',
         'driver-unload-exit','driver-boundary-exception','invalid-sid','comma-sids',
         'range-sid','missing-profile','missing-ntuser','mixed-targets','whatif',
-        'driver-no-targets','driver-mixed-targets')) {
+        'driver-no-targets','driver-mixed-targets','duplicates','duplicates-ineligible',
+        'driver-duplicates','driver-duplicates-ineligible')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -312,18 +339,20 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             'driver-unload-exit' { 4 } 'driver-boundary-exception' { 2 }
             'mixed-targets' { 1 } 'whatif' { 2 }
             'driver-no-targets' { 0 } 'driver-mixed-targets' { 2 }
+            'duplicates' { 2 } 'duplicates-ineligible' { 1 }
+            'driver-duplicates' { 4 } 'driver-duplicates-ineligible' { 2 }
             default { 0 }
         }
         if ($output -notmatch "PAYLOADS_REMAINING:$expectedPayloads") {
             throw "$caseValue/$preferenceValue retained unexpected payloads:`n$output"
         }
-        $postDisassociation = ($caseValue -like 'driver-*' -and $caseValue -notin @('driver-no-targets','driver-mixed-targets')) -or $caseValue -in @('success', 'mounted-success',
+        $postDisassociation = ($caseValue -like 'driver-*' -and $caseValue -notin @('driver-no-targets','driver-mixed-targets','driver-duplicates-ineligible')) -or $caseValue -in @('success', 'mounted-success', 'duplicates',
             'import-failure', 'import-exception')
         if ($postDisassociation) {
             if ($output -notmatch '(?s)EXPORTED.*BUILT.*BUILT.*DISASSOCIATED.*HIVE_CHECKED') {
                 throw "Payloads were not fully prepared before disassociation:`n$output"
             }
-        } elseif ($caseValue -notin @('mixed-targets','driver-mixed-targets') -and $output -match 'DISASSOCIATED|IMPORTED') {
+        } elseif ($caseValue -notin @('mixed-targets','driver-mixed-targets','duplicates-ineligible','driver-duplicates-ineligible') -and $output -match 'DISASSOCIATED|IMPORTED') {
             throw "Preflight failure reached destructive migration:`n$output"
         }
         if ($caseValue -in @('parent-failure','read-failure','backup-collision','export-failure') -and
@@ -334,7 +363,34 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             $output -notmatch '(?s)BUILT.*DISASSOCIATED.*HIVE_MOUNTED.*IMPORTED.*HIVE_DISMOUNTED') {
             throw "Owned hive was not unloaded:`n$output"
         }
-        if ($caseValue -in @('success', 'mounted-success')) {
+        if ($caseValue -like '*duplicate*') {
+            $printerCount = if ($caseValue -like 'driver-*') { 2 } else { 1 }
+            $installs = if ($caseValue -like '*ineligible') { 1 } else { 2 }
+            $expectedExit = if ($caseValue -eq 'driver-duplicates-ineligible') { 1 } else { 0 }
+            $builtSIDs = @([regex]::Matches($output, '(?m)^BUILT_FOR:(.+)\r?$') |
+                ForEach-Object { $_.Groups[1].Value.TrimEnd("`r") })
+            $expectedSIDs = @()
+            for ($i = 0; $i -lt $printerCount; $i++) {
+                if ($installs -eq 2) { $expectedSIDs += 'S-1-5-21-1-2-3-1001' }
+                $expectedSIDs += 'S-1-5-21-1-2-3-1002'
+            }
+            if ($exitCode -ne $expectedExit -or $output -notmatch "QUERIES:$printerCount" -or
+                ([regex]::Matches($output, 'already listed; skipping duplicate')).Count -ne 3 -or
+                ($builtSIDs -join ',') -cne ($expectedSIDs -join ',') -or
+                ([regex]::Matches($output, '(?m)^IMPORTED\r?$')).Count -ne ($installs * $printerCount)) {
+                throw "Canonical duplicate handling/order/count failed:`n$output"
+            }
+            if ($caseValue -like 'driver-*') {
+                if (([regex]::Matches($output, "installs=$installs/2")).Count -ne 2 -or
+                    $output -notmatch 'RESTARTED:Spooler' -or
+                    ($installs -eq 2 -and $output -notmatch 'Succeeded\s+:\s+2')) {
+                    throw "Unique-target driver summary failed:`n$output"
+                }
+            } elseif ($output -notmatch "INSTALLS:$installs" -or
+                $output -notmatch "PREFERENCE_AFTER:$preferenceValue") {
+                throw "Direct-helper duplicate handling failed:`n$output"
+            }
+        } elseif ($caseValue -in @('success', 'mounted-success')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:2' -or $output -notmatch 'RETURNED:True') {
                 throw "Success case failed under ${preferenceValue}:`n$output"
             }

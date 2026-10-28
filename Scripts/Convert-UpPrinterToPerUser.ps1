@@ -17,6 +17,8 @@ failures, 0 otherwise. DeviceAssociationService and Spooler restart unless skipp
 Only detect per-system UP printers. Exit 0 = found; exit 1 = none found.
 .PARAMETER UserSIDs
 Target these user SIDs; omit to target all real user profiles.
+SIDs are canonicalized in first-seen order. Each duplicate is logged and skipped;
+summary counts use unique targets, not duplicate arguments.
 .PARAMETER WhatIfMode
 Export backups, prepare files, and check/load/unload hives, but do not
 disassociate, import, or restart services. Requires SYSTEM or an elevated
@@ -654,6 +656,37 @@ function Build-PerUserRegContent {
 
 # --- Main ---------------------------------------------------------------------
 
+function ConvertTo-CanonicalUserSID {
+    param ([string]$UserSID)
+
+    if ($UserSID -notmatch '^S-1-(?:5-21|12-1)-[0-9]+-[0-9]+-[0-9]+-[0-9]+$') {
+        throw 'Expected one local/domain or Entra user SID per argument (not comma-joined).'
+    }
+    foreach ($component in ($UserSID -split '-')[4..7]) {
+        $null = [uint32]::Parse($component, [Globalization.CultureInfo]::InvariantCulture)
+    }
+    return [Security.Principal.SecurityIdentifier]::new($UserSID).Value
+}
+
+function Get-UniqueTargetSIDs {
+    param ([string[]]$TargetSIDs)
+
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($sid in $TargetSIDs) {
+        $target = $sid
+        try { $target = ConvertTo-CanonicalUserSID -UserSID $sid }
+        catch {
+            # Keep invalid targets so per-printer eligibility still reports failure.
+            Write-Host "  Invalid target '${sid}'; retaining for eligibility reporting: $_" -ForegroundColor Yellow
+        }
+        if (-not $seen.Add($target)) {
+            Write-Host "  Target '${sid}' already listed; skipping duplicate '$target'." -ForegroundColor DarkGray
+            continue
+        }
+        $target
+    }
+}
+
 function Convert-OnePrinter {
     param (
         [Parameter(Mandatory = $true)][string]$ShareId,
@@ -741,15 +774,9 @@ function Convert-OnePrinter {
         # 4) Check eligibility without loading hives, then finish payload writes.
         # Existence is only preflight: actual hive loads/imports can still fail.
         $payloads = @()
-        foreach ($sid in $TargetSIDs) {
+        foreach ($sid in @(Get-UniqueTargetSIDs -TargetSIDs $TargetSIDs)) {
             try {
-                if ($sid -notmatch '^S-1-(?:5-21|12-1)-[0-9]+-[0-9]+-[0-9]+-[0-9]+$') {
-                    throw 'Expected one local/domain or Entra user SID per argument (not comma-joined).'
-                }
-                foreach ($component in ($sid -split '-')[4..7]) {
-                    $null = [uint32]::Parse($component, [Globalization.CultureInfo]::InvariantCulture)
-                }
-                $null = [Security.Principal.SecurityIdentifier]::new($sid)
+                $sid = ConvertTo-CanonicalUserSID -UserSID $sid
                 if (-not (Test-HiveLoaded -UserSID $sid)) {
                     $profile = Get-ProfileImagePath -UserSID $sid
                     if (-not $profile) { throw 'ProfileImagePath is missing.' }
@@ -917,6 +944,7 @@ if ($UserSIDs -and $UserSIDs.Count -gt 0) {
     $targetSIDs = @(Get-AllRealUserSIDs)
     Write-Host "  Found $($targetSIDs.Count) real user profile(s)."
 }
+$targetSIDs = @(Get-UniqueTargetSIDs -TargetSIDs $targetSIDs)
 foreach ($s in $targetSIDs) { Write-Host "    $s" -ForegroundColor DarkGray }
 
 if ($targetSIDs.Count -eq 0) {
