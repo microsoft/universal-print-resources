@@ -118,7 +118,7 @@ if ($Case) {
                     if ($payload -notmatch 'HKEY_USERS\\S-1-5-21-1-2-3-100[12]\\') { throw 'Wrong user destination' }
                     if ($script:builtContents -cnotcontains $payload) { throw 'Imported payload differs from unchanged builder output' }
                     $script:importCount++
-                    if ($Case -in @('import-failure','driver-import-failure','import-exception','driver-import-unload-exception') -and $script:importCount -eq 1) {
+                    if ($Case -in @('import-failure','driver-import-failure','import-exception','driver-import-unload-exception','driver-auto-import-error') -and $script:importCount -eq 1) {
                         Write-Host 'IMPORT_FAILED'
                         if ($Case -in @('import-exception','driver-import-unload-exception')) { throw 'Injected uncertain native import completion' }
                         $global:LASTEXITCODE = 5
@@ -135,6 +135,12 @@ if ($Case) {
             param([string]$UserSID)
             Write-Host 'HIVE_CHECKED'
             $script:hiveChecks++
+            if ($Case -match '^driver-(?:auto|explicit)-') {
+                if ($Case -eq 'driver-auto-hive-error' -and $UserSID -match '1002$') {
+                    throw [UnauthorizedAccessException]::new('Injected hive access denied')
+                }
+                return $script:hiveLoaded
+            }
             if ($Case -like '*duplicate*') {
                 if ($UserSID -cnotin @('S-1-5-21-1-2-3-1001', 'S-1-5-21-1-2-3-1002')) {
                     throw "Noncanonical hive lookup: $UserSID"
@@ -154,6 +160,14 @@ if ($Case) {
         }
         function Get-ProfileImagePath {
             param([string]$UserSID)
+            if ($Case -eq 'driver-auto-no-eligible') { return $null }
+            if ($Case -match '^driver-(?:auto|explicit)-' -and $UserSID -match '1002$') {
+                if ($Case -in @('driver-auto-stale','driver-explicit-stale','driver-auto-whatif','driver-auto-import-error')) { return $null }
+                if ($Case -in @('driver-auto-missing-ntuser','driver-explicit-missing-ntuser')) { return [IO.Path]::Combine($fixture,'absent') }
+                if ($Case -eq 'driver-auto-query-error') { throw 'Injected ProfileImagePath query failed: Access is denied.' }
+                if ($Case -eq 'driver-auto-invalid-path') { throw 'ProfileImagePath must be a fully qualified drive or UNC path without dot segments.' }
+                if ($Case -eq 'driver-auto-path-error') { return [IO.Path]::Combine($fixture,'denied') }
+            }
             if ($Case -like '*duplicate*ineligible' -and $UserSID -eq 'S-1-5-21-1-2-3-1001') { return $null }
             if ($Case -in @('hive-unavailable','missing-profile') -or
                 ($Case -in @('mixed-targets','driver-mixed-targets') -and $UserSID -match '1002$')) { return $null }
@@ -164,6 +178,7 @@ if ($Case) {
             param([string]$UserSID, [string]$ProfilePath)
             Write-Host 'HIVE_MOUNTED'
             $script:mountCount++
+            if ($Case -eq 'driver-auto-mount-failure' -and $UserSID -match '1002$') { return $false }
             if ($Case -eq 'driver-mount-exception' -and $script:mountCount -eq 1) {
                 throw 'Injected first-user hive-load exception'
             }
@@ -194,6 +209,9 @@ if ($Case) {
         function Test-Path {
             [CmdletBinding()]
             param([string]$LiteralPath, [string]$Path, [string]$PathType)
+            if ($Case -eq 'driver-auto-path-error' -and $LiteralPath -like '*\denied\NTUSER.DAT') {
+                throw [UnauthorizedAccessException]::new('Injected profile file access denied')
+            }
             if ($LiteralPath) { return [IO.File]::Exists($LiteralPath) }
             return $true
         }
@@ -210,7 +228,7 @@ if ($Case) {
             param ($UserSID, $ShareId, $InstanceGuid, $TenantId, $PerSystem)
             Write-Host 'BUILT'
             Write-Host "BUILT_FOR:$UserSID"
-            if ($Case -in @('build-failure', 'mounted-build-failure') -or
+            if ($Case -in @('build-failure', 'mounted-build-failure','driver-auto-build-error') -or
                 ($Case -eq 'driver-failure' -and $ShareId -ne $share)) {
                 Write-Error 'Injected preparation failure'
                 return
@@ -230,12 +248,12 @@ if ($Case) {
                 } else {
                     & $script:originalWrite -Path $Path -Content $Content
                 }
-                if ($Case -eq 'expanded-profile') {
-                    $env:UPConvertProfileFixture = $fixture
-                    Set-Item Function:\Get-ProfileImagePath $script:originalProfile
-                    Set-Item Function:\Mount-UserHive $script:originalMount
-                }
             }
+        }
+        if ($Case -eq 'expanded-profile') {
+            $env:UPConvertProfileFixture = $fixture
+            Set-Item Function:\Get-ProfileImagePath $script:originalProfile
+            Set-Item Function:\Mount-UserHive $script:originalMount
         }
         $share = '11111111-2222-3333-4444-555555555555'
         $arguments = @{
@@ -255,11 +273,12 @@ if ($Case) {
         if ($Case -in @('mixed-targets','driver-mixed-targets')) { $arguments.TargetSIDs += 'not-a-sid' }
         if ($Case -eq 'driver-no-targets') { $arguments.TargetSIDs = @('not-a-sid') }
         if ($Case -eq 'whatif') { $arguments.WhatIfMode = $true }
+        if ($Case -eq 'driver-auto-invalid-sid') { $arguments.TargetSIDs[1] = 'not-a-sid' }
         if ($Case -eq 'driver-boundary-exception') {
             $script:originalConvert = ${function:Convert-OnePrinter}
             $script:conversionCount = 0
             function Convert-OnePrinter {
-                param($ShareId, $TenantId, $TargetSIDs, $Timestamp, [switch]$WhatIfMode, [switch]$SkipDisassociate)
+                param($ShareId, $TenantId, $TargetSIDs, $Timestamp, [switch]$WhatIfMode, [switch]$SkipDisassociate, [switch]$AutomaticallyEnumeratedTargets)
                 $script:conversionCount++
                 if ($script:conversionCount -eq 1) { throw 'Injected first-printer outer-boundary exception' }
                 & $script:originalConvert @PSBoundParameters
@@ -279,15 +298,20 @@ if ($Case) {
             $shareIdsToConvert = @($share, '22222222-2222-3333-4444-555555555555')
             $targetSIDs = $arguments.TargetSIDs
             $UserSIDs = $arguments.TargetSIDs
+            if ($Case -like 'driver-auto-*') {
+                $UserSIDs = @()
+                function Get-AllRealUserSIDs { return $arguments.TargetSIDs }
+            }
             if ($Case -eq 'driver-enumeration-failure') { $UserSIDs = @() }
             $TenantId = $arguments.TenantId
-            $WhatIfMode = $false
+            $WhatIfMode = ($Case -eq 'driver-auto-whatif')
             $SkipDisassociate = $false
             $SkipRestart = $false
             $results = @()
             $statements = @($ast.EndBlock.Statements)
             $start = @($statements | Where-Object {
-                if ($Case -like '*duplicate*' -or $Case -eq 'driver-enumeration-failure') {
+                if ($Case -like '*duplicate*' -or $Case -eq 'driver-enumeration-failure' -or
+                    $Case -match '^driver-(?:auto|explicit)-') {
                     $_.Extent.Text -eq 'Write-Host "Resolving target users..." -ForegroundColor Cyan'
                 } else {
                     $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
@@ -368,7 +392,12 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'range-sid','missing-profile','missing-ntuser','mixed-targets','whatif',
         'driver-no-targets','driver-mixed-targets','duplicates','duplicates-ineligible',
         'driver-duplicates','driver-duplicates-ineligible','expanded-profile','query-denied',
-        'driver-enumeration-failure','printer-enumeration-failure')) {
+        'driver-enumeration-failure','printer-enumeration-failure',
+        'driver-auto-stale','driver-explicit-stale','driver-auto-missing-ntuser',
+        'driver-explicit-missing-ntuser','driver-auto-no-eligible','driver-auto-query-error',
+        'driver-auto-hive-error','driver-auto-path-error','driver-auto-build-error',
+        'driver-auto-import-error','driver-auto-whatif','driver-auto-invalid-sid',
+        'driver-auto-mount-failure','driver-auto-invalid-path')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -385,18 +414,25 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             'duplicates' { 2 } 'duplicates-ineligible' { 1 }
             'driver-duplicates' { 4 } 'driver-duplicates-ineligible' { 2 }
             'expanded-profile' { 2 }
+            'driver-auto-stale' { 2 } 'driver-explicit-stale' { 2 }
+            'driver-auto-missing-ntuser' { 2 } 'driver-explicit-missing-ntuser' { 2 }
+            'driver-auto-query-error' { 2 } 'driver-auto-hive-error' { 2 }
+            'driver-auto-path-error' { 2 } 'driver-auto-invalid-path' { 2 }
+            'driver-auto-invalid-sid' { 2 } 'driver-auto-import-error' { 2 }
+            'driver-auto-mount-failure' { 4 } 'driver-auto-whatif' { 2 }
             default { 0 }
         }
         if ($output -notmatch "PAYLOADS_REMAINING:$expectedPayloads") {
             throw "$caseValue/$preferenceValue retained unexpected payloads:`n$output"
         }
-        $postDisassociation = ($caseValue -like 'driver-*' -and $caseValue -notin @('driver-no-targets','driver-mixed-targets','driver-duplicates-ineligible','driver-enumeration-failure')) -or $caseValue -in @('success', 'mounted-success', 'duplicates','expanded-profile',
+        $policyCase = $caseValue -match '^driver-(?:auto|explicit)-'
+        $postDisassociation = ($caseValue -like 'driver-*' -and -not $policyCase -and $caseValue -notin @('driver-no-targets','driver-mixed-targets','driver-duplicates-ineligible','driver-enumeration-failure')) -or $caseValue -in @('success', 'mounted-success', 'duplicates','expanded-profile',
             'import-failure', 'import-exception')
         if ($postDisassociation) {
             if ($output -notmatch '(?s)EXPORTED.*BUILT.*BUILT.*DISASSOCIATED.*HIVE_CHECKED') {
                 throw "Payloads were not fully prepared before disassociation:`n$output"
             }
-        } elseif ($caseValue -notin @('mixed-targets','driver-mixed-targets','duplicates-ineligible','driver-duplicates-ineligible') -and $output -match 'DISASSOCIATED|IMPORTED') {
+        } elseif (-not $policyCase -and $caseValue -notin @('mixed-targets','driver-mixed-targets','duplicates-ineligible','driver-duplicates-ineligible') -and $output -match 'DISASSOCIATED|IMPORTED') {
             throw "Preflight failure reached destructive migration:`n$output"
         }
         if ($caseValue -in @('parent-failure','read-failure','backup-collision','export-failure') -and
@@ -407,7 +443,47 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             $output -notmatch '(?s)BUILT.*DISASSOCIATED.*HIVE_MOUNTED.*IMPORTED.*HIVE_DISMOUNTED') {
             throw "Owned hive was not unloaded:`n$output"
         }
-        if ($caseValue -eq 'printer-enumeration-failure') {
+        if ($policyCase) {
+            $warningOnly = $caseValue -in @('driver-auto-stale','driver-auto-missing-ntuser','driver-auto-whatif')
+            $expectedExit = if ($warningOnly) { 0 } else { 1 }
+            $failedCount = if ($warningOnly) { 0 } elseif ($caseValue -eq 'driver-auto-import-error') { 1 } else { 2 }
+            $skips = if ($caseValue -eq 'driver-auto-no-eligible') { 2 } elseif ($warningOnly -or $caseValue -eq 'driver-auto-import-error') { 1 } else { 0 }
+            $imports = if ($caseValue -in @('driver-auto-no-eligible','driver-auto-build-error','driver-auto-whatif')) { 0 } elseif ($caseValue -eq 'driver-auto-import-error') { 1 } else { 2 }
+            $pairs = if ($caseValue -in @('driver-auto-no-eligible','driver-auto-build-error','driver-auto-whatif')) { 0 } else { 2 }
+            if ($exitCode -ne $expectedExit -or $output -notmatch "Failed\s+:\s+$failedCount" -or
+                $output -notmatch "Succeeded\s+:\s+$(2 - $failedCount)" -or
+                ([regex]::Matches($output, 'WARN: Skipping automatically discovered target')).Count -ne (2 * $skips) -or
+                ([regex]::Matches($output, "skipped=$skips")).Count -ne 2 -or
+                ([regex]::Matches($output, '(?m)^IMPORTED\r?$')).Count -ne $imports -or
+                ([regex]::Matches($output, '(?m)^DISASSOCIATED\r?$')).Count -ne $pairs) {
+                throw "Enumeration/explicit eligibility policy failed:`n$output"
+            }
+            if ($caseValue -eq 'driver-auto-whatif') {
+                if ($output -match 'RESTARTED:' -or $output -notmatch '\[WHATIF\]') { throw "WhatIf policy case mutated host operations:`n$output" }
+            } elseif ($output -notmatch 'RESTARTED:DeviceAssociationService' -or $output -notmatch 'RESTARTED:Spooler') {
+                throw "Policy case did not finalize:`n$output"
+            }
+            $expectedSummary = if ($warningOnly) {
+                if ($caseValue -eq 'driver-auto-whatif') { 'installs=0/1' } else { 'installs=1/1' }
+            } elseif ($caseValue -eq 'driver-auto-no-eligible') { 'installs=0/0' }
+            elseif ($caseValue -eq 'driver-auto-build-error') { 'installs=0/2' }
+            elseif ($caseValue -eq 'driver-auto-import-error') { 'installs=0/1' }
+            else { 'installs=1/2' }
+            if ($output -notmatch $expectedSummary) { throw "Skipped/failed install summary was misleading:`n$output" }
+            $expectedDiagnostic = switch ($caseValue) {
+                'driver-auto-no-eligible' { 'No eligible targets.*leaving the per-system printer unchanged' }
+                'driver-auto-query-error' { 'Injected ProfileImagePath query failed' }
+                'driver-auto-hive-error' { 'Injected hive access denied' }
+                'driver-auto-path-error' { 'Injected profile file access denied' }
+                'driver-auto-invalid-path' { 'fully qualified drive or UNC path' }
+                'driver-auto-invalid-sid' { "Ineligible target 'not-a-sid'" }
+                'driver-auto-build-error' { 'Private payload preparation failed' }
+                'driver-auto-import-error' { 'reg import failed' }
+                'driver-auto-mount-failure' { 'hive not available' }
+                default { 'ProfileImagePath is missing|NTUSER.DAT is missing' }
+            }
+            if ($output -notmatch $expectedDiagnostic) { throw "Policy case lost diagnostic:`n$output" }
+        } elseif ($caseValue -eq 'printer-enumeration-failure') {
             if ($exitCode -ne 1 -or $output -notmatch 'Could not enumerate printers.*enumeration failed.*Access is denied' -or
                 $output -match 'Nothing to do|No target users|RESTARTED:|RETURNED:|DISASSOCIATED|IMPORTED') {
                 throw "Printer enumeration failure was hidden:`n$output"

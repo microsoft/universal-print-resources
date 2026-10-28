@@ -9,7 +9,10 @@ Sysinternals PsExec installation (or substitute pwsh.exe for PowerShell 7).
 
 Use ShareId for one printer or AllUPPrinters for all, with your TenantId.
 Conversion skips invalid or unavailable users and continues eligible users.
-Skipped targets count as incomplete even when discovered through ProfileList.
+Missing profile paths or NTUSER.DAT files are warning-only skips for automatically
+discovered targets, but count as incomplete for explicit UserSIDs. Query/access,
+invalid target/path, staging and migration errors remain failures in either mode.
+Summary install counts exclude warning-only skips and report them separately.
 Exit 1 therefore does not imply nothing changed or that retrying is safe.
 If none are eligible, the per-system printer stays unchanged. Failures after
 changes begin can leave a partial migration; there is no automatic rollback.
@@ -752,6 +755,7 @@ function Convert-OnePrinter {
         [Parameter(Mandatory = $true)][string]$TenantId,
         [Parameter(Mandatory = $true)][string[]]$TargetSIDs,
         [Parameter(Mandatory = $true)][string]$Timestamp,
+        [switch]$AutomaticallyEnumeratedTargets,
         [switch]$WhatIfMode,
         [switch]$SkipDisassociate
     )
@@ -768,6 +772,7 @@ function Convert-OnePrinter {
     $backupComplete = $false
     $installs = @()
     $errors = @()
+    $skippedCount = 0
     try {
         # 1) Verify per-system entry exists
         $query = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('query', $regPerSysKey)
@@ -836,19 +841,33 @@ function Convert-OnePrinter {
         $payloads = @()
         foreach ($sid in @(Get-UniqueTargetSIDs -TargetSIDs $TargetSIDs)) {
             $profilePath = $null
+            $ineligibleReason = $null
             try {
                 $sid = ConvertTo-CanonicalUserSID -UserSID $sid
                 if (-not (Test-HiveLoaded -UserSID $sid)) {
                     $profilePath = Get-ProfileImagePath -UserSID $sid
-                    if (-not $profilePath) { throw 'ProfileImagePath is missing.' }
-                    $ntuser = [IO.Path]::Combine($profilePath, 'NTUSER.DAT')
-                    if (-not (Test-Path -LiteralPath $ntuser -PathType Leaf -ErrorAction Stop)) {
-                        throw "NTUSER.DAT is missing: $ntuser"
+                    if (-not $profilePath) {
+                        $ineligibleReason = 'ProfileImagePath is missing.'
+                    } else {
+                        $ntuser = [IO.Path]::Combine($profilePath, 'NTUSER.DAT')
+                        if (-not (Test-Path -LiteralPath $ntuser -PathType Leaf -ErrorAction Stop)) {
+                            $ineligibleReason = "NTUSER.DAT is missing: $ntuser"
+                        }
                     }
                 }
             } catch {
                 Write-Host "  SKIP: Ineligible target '${sid}': $_" -ForegroundColor Yellow
                 $errors += "ineligible target '${sid}': $_"
+                continue
+            }
+            if ($ineligibleReason) {
+                if ($AutomaticallyEnumeratedTargets) {
+                    Write-Host "  WARN: Skipping automatically discovered target '${sid}': $ineligibleReason" -ForegroundColor Yellow
+                    $skippedCount++
+                } else {
+                    Write-Host "  SKIP: Ineligible target '${sid}': $ineligibleReason" -ForegroundColor Yellow
+                    $errors += "ineligible target '${sid}': $ineligibleReason"
+                }
                 continue
             }
             $savedPreference = $ErrorActionPreference
@@ -868,12 +887,13 @@ function Convert-OnePrinter {
             } catch {
                 Write-Host "ERROR: Private payload preparation failed for ${sid}: $_. System printer unchanged. Backup: $backupFile" -ForegroundColor Red
                 $errors += "preparation for ${sid}: $_"
-                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $backupFile; Installs = @() }
+                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $backupFile; Installs = @(); SkippedCount = $skippedCount }
             } finally { $ErrorActionPreference = $savedPreference }
         }
         if ($payloads.Count -eq 0) {
             Write-Host "ERROR: No eligible targets for $ShareId; leaving the per-system printer unchanged. Backup: $backupFile" -ForegroundColor Red
-            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $backupFile; Installs = @() }
+            $errors += 'no eligible targets'
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $backupFile; Installs = @(); SkippedCount = $skippedCount }
         }
 
         # 5) Disassociate only after preflight; actual native failures are not a
@@ -883,7 +903,7 @@ function Convert-OnePrinter {
             $pairtool = "$env:SystemRoot\System32\pairtool.exe"
             if (-not (Test-Path $pairtool)) {
                 Write-Host "ERROR: pairtool.exe not found at $pairtool." -ForegroundColor Red
-                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'pairtool missing'; Backup = $backupFile; Installs = @() }
+                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'pairtool missing'; Backup = $backupFile; Installs = @(); SkippedCount = $skippedCount }
             }
             if ($WhatIfMode) {
                 Write-Host "  [WHATIF] Would run: $pairtool -disassociate `"MCP#$ShareId`""
@@ -964,11 +984,11 @@ function Convert-OnePrinter {
             }
         }
 
-        return [pscustomobject]@{ ShareId = $ShareId; Success = ($errors.Count -eq 0); Error = ($errors -join '; '); Backup = $backupFile; Installs = $installs }
+        return [pscustomobject]@{ ShareId = $ShareId; Success = ($errors.Count -eq 0); Error = ($errors -join '; '); Backup = $backupFile; Installs = $installs; SkippedCount = $skippedCount }
     } catch {
         Write-Host "ERROR: Printer $ShareId did not complete; state uncertain: $_. Backup: $backupFile" -ForegroundColor Red
         $errors += "printer exception: $_"
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $(if ($backupComplete) { $backupFile } else { $null }); Installs = $installs }
+        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $(if ($backupComplete) { $backupFile } else { $null }); Installs = $installs; SkippedCount = $skippedCount }
     }
 }
 
@@ -1033,6 +1053,7 @@ try {
         try {
             $r = @(Convert-OnePrinter -ShareId $sid -TenantId $TenantId -TargetSIDs $targetSIDs `
                                       -Timestamp $timestamp `
+                                      -AutomaticallyEnumeratedTargets:(-not ($UserSIDs -and $UserSIDs.Count -gt 0)) `
                                       -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
         } catch {
             # Last-resort boundary for failures outside the printer's own catch.
@@ -1083,10 +1104,10 @@ Write-Host "  Printers processed : $($results.Count)"
 Write-Host "  Succeeded          : $($succeeded.Count)"
 Write-Host "  Failed             : $($failed.Count)"
 foreach ($r in $succeeded) {
-    Write-Host ("    [{0}]  installs={1}/{2}  backup={3}" -f $r.ShareId, $r.Installs.Count, $targetSIDs.Count, $r.Backup) -ForegroundColor Green
+    Write-Host ("    [{0}]  installs={1}/{2}  skipped={3}  backup={4}" -f $r.ShareId, $r.Installs.Count, ($targetSIDs.Count - [int]$r.SkippedCount), [int]$r.SkippedCount, $r.Backup) -ForegroundColor Green
 }
 foreach ($r in $failed) {
-    Write-Host ("    [{0}]  FAILED: {1}; installs={2}/{3}; backup={4}" -f $r.ShareId, $r.Error, $r.Installs.Count, $targetSIDs.Count, $r.Backup) -ForegroundColor Red
+    Write-Host ("    [{0}]  FAILED: {1}; installs={2}/{3}; skipped={4}; backup={5}" -f $r.ShareId, $r.Error, $r.Installs.Count, ($targetSIDs.Count - [int]$r.SkippedCount), [int]$r.SkippedCount, $r.Backup) -ForegroundColor Red
 }
 Write-Host "Done."
 if ($failed.Count -gt 0 -or $restartFailed) { exit 1 }
