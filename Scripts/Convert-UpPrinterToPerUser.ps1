@@ -286,6 +286,8 @@ function New-PrivateStagingDirectory {
     if (-not $windows) { throw 'Cannot locate the Windows directory for fixed private staging.' }
     Assert-StagingAncestors -Path $windows -AllowLeafReadAccess
     $parent = [IO.Path]::Combine($windows, 'UPConvert')
+    # Keep the shared root Administrators-owned so SYSTEM and elevated WhatIf
+    # callers can reuse it without changing ownership between runs.
     $rootSecurity = [Security.AccessControl.DirectorySecurity]::new()
     $rootSecurity.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
     Initialize-ProtectedStagingDirectory -Path $parent -Security $rootSecurity
@@ -341,14 +343,20 @@ function Initialize-ProtectedStagingDirectory {
 
 function Assert-ProtectedStagingDirectory {
     param ([string]$Path, [Security.AccessControl.DirectorySecurity]$Security)
+    # 1) Reject redirected paths before inspecting the target's permissions.
     $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Staging directory must be an ordinary non-reparse directory: $Path"
     }
+    # 2) Read the stored DACL and the requested DACL separately. Do not compare
+    # whole SDDL strings: NTFS can add harmless auto-inheritance control flags.
     $actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path -ErrorAction Stop
     $sections = [Security.AccessControl.AccessControlSections]::Access
     $actualDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($actual.GetSecurityDescriptorSddlForm($sections))
     $expectedDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($Security.GetSecurityDescriptorSddlForm($sections))
+    # 3) Serialize each ACE to preserve its SID, type, mask and inheritance flags.
+    # Sorting ignores equivalent ACE ordering but retains duplicate ACE counts;
+    # Base64 is only a comparison representation, not encryption.
     $actualAces = @($actualDescriptor.DiscretionaryAcl | ForEach-Object {
         $bytes = [byte[]]::new($_.BinaryLength)
         $_.GetBinaryForm($bytes, 0)
@@ -359,6 +367,9 @@ function Assert-ProtectedStagingDirectory {
         $_.GetBinaryForm($bytes, 0)
         [Convert]::ToBase64String($bytes)
     } | Sort-Object)
+    # 4) Require the expected owner, inheritance protection, canonical ordering
+    # and exact ACE contents. A null DACL grants unrestricted access, so reject it.
+    # Fail without repairing permissions or deleting retained backup directories.
     if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $Security.GetOwner([Security.Principal.SecurityIdentifier]).Value -or
         -not $actual.AreAccessRulesProtected -or -not $actual.AreAccessRulesCanonical -or
         $null -eq $actualDescriptor.DiscretionaryAcl -or
@@ -393,6 +404,8 @@ function Invoke-ConversionNative {
             else { $_.ToString() }
         }) }
     } finally {
+        # Native invocation changes global LASTEXITCODE; restore its prior value
+        # or absence so this helper does not alter the caller's command state.
         if ($null -ne $previousExitCode) { $global:LASTEXITCODE = $previousExitValue }
         else { Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue }
     }
