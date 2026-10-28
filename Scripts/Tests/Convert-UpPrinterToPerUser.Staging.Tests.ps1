@@ -44,6 +44,9 @@ if ($Case) {
         $script:mountCount = 0
         $script:unloadCount = 0
         $script:originalUnload = ${function:Dismount-UserHive}
+        $script:originalProfile = ${function:Get-ProfileImagePath}
+        $script:originalMount = ${function:Mount-UserHive}
+        $script:profileQueries = 0
         function Start-Sleep {}
         function New-PrivateStagingDirectory {
             # Only the production parent/ACL creation is replaced. File creation,
@@ -67,10 +70,28 @@ if ($Case) {
                     return
                 }
                 'query' {
+                    if ($Case -eq 'expanded-profile' -and $args -contains 'ProfileImagePath') {
+                        $script:profileQueries++
+                        if ($script:profileQueries -gt 2) { throw 'Profile path was reread after preparation' }
+                        return '    ProfileImagePath    REG_EXPAND_SZ    %UPConvertProfileFixture%'
+                    }
                     $script:queryCount++
+                    if ($Case -in @('driver-enumeration-failure','printer-enumeration-failure','query-denied')) {
+                        $global:LASTEXITCODE = 1
+                        return 'ERROR: Access is denied.'
+                    }
                     if ($Case -eq 'driver-query-exception' -and $script:queryCount -eq 1) {
                         throw 'Injected first-printer query exception'
                     }
+                    return
+                }
+                'load' {
+                    if ($Case -ne 'expanded-profile' -or
+                        $args[2] -cne [IO.Path]::Combine($fixture, 'NTUSER.DAT')) {
+                        throw "Wrong expanded hive path: $($args[2])"
+                    }
+                    $script:hiveLoaded = $true
+                    Write-Host 'HIVE_MOUNTED'
                     return
                 }
                 'export' {
@@ -125,7 +146,7 @@ if ($Case) {
             }
             if ($Case -in @('mixed-targets','driver-mixed-targets')) { return $script:hiveLoaded }
             if ($Case -in @('hive-unavailable','missing-profile','missing-ntuser')) { return $false }
-            if ($Case -in @('mounted-build-failure', 'mounted-success',
+            if ($Case -in @('mounted-build-failure', 'mounted-success','expanded-profile',
                 'driver-mount-exception','driver-unload-exception','driver-import-unload-exception','driver-unload-exit')) {
                 return $script:hiveLoaded
             }
@@ -140,6 +161,7 @@ if ($Case) {
             return $fixture
         }
         function Mount-UserHive {
+            param([string]$UserSID, [string]$ProfilePath)
             Write-Host 'HIVE_MOUNTED'
             $script:mountCount++
             if ($Case -eq 'driver-mount-exception' -and $script:mountCount -eq 1) {
@@ -208,6 +230,11 @@ if ($Case) {
                 } else {
                     & $script:originalWrite -Path $Path -Content $Content
                 }
+                if ($Case -eq 'expanded-profile') {
+                    $env:UPConvertProfileFixture = $fixture
+                    Set-Item Function:\Get-ProfileImagePath $script:originalProfile
+                    Set-Item Function:\Mount-UserHive $script:originalMount
+                }
             }
         }
         $share = '11111111-2222-3333-4444-555555555555'
@@ -238,10 +265,21 @@ if ($Case) {
                 & $script:originalConvert @PSBoundParameters
             }
         }
+        if ($Case -eq 'printer-enumeration-failure') {
+            $resolution = @($ast.EndBlock.Statements | Where-Object {
+                $_ -is [Management.Automation.Language.TryStatementAst] -and
+                $_.Extent.Text.Contains('$shareIdsToConvert = @(Get-AllPerSystemShareIds)')
+            })
+            if ($resolution.Count -ne 1) { throw 'Could not identify production printer enumeration' }
+            $resolutionText = $resolution[0].Extent.Text.Replace('$PSCmdlet.ParameterSetName', "'ConvertAll'")
+            . ([scriptblock]::Create($resolutionText))
+            throw 'Printer enumeration failure did not exit'
+        }
         if ($Case -like 'driver-*') {
             $shareIdsToConvert = @($share, '22222222-2222-3333-4444-555555555555')
             $targetSIDs = $arguments.TargetSIDs
             $UserSIDs = $arguments.TargetSIDs
+            if ($Case -eq 'driver-enumeration-failure') { $UserSIDs = @() }
             $TenantId = $arguments.TenantId
             $WhatIfMode = $false
             $SkipDisassociate = $false
@@ -249,7 +287,7 @@ if ($Case) {
             $results = @()
             $statements = @($ast.EndBlock.Statements)
             $start = @($statements | Where-Object {
-                if ($Case -like '*duplicate*') {
+                if ($Case -like '*duplicate*' -or $Case -eq 'driver-enumeration-failure') {
                     $_.Extent.Text -eq 'Write-Host "Resolving target users..." -ForegroundColor Cyan'
                 } else {
                     $_ -is [Management.Automation.Language.AssignmentStatementAst] -and
@@ -305,12 +343,16 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         $savedPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = $preferenceValue
+            $global:LASTEXITCODE = 123
             $native = Invoke-ConversionNative -Command $env:ComSpec -Arguments @(
                 '/d', '/c', "echo harmless-native-probe 1>&2 & exit /b $exit")
             if ($native.ExitCode -ne $exit -or ($native.Output -join ' ') -notmatch 'harmless-native-probe') {
                 throw 'Native stderr/exit handling failed'
             }
             if ($ErrorActionPreference -ne $preferenceValue) { throw 'Native boundary changed caller preference' }
+            if ($global:LASTEXITCODE -ne 123 -or ($native.Output -join ' ') -match 'System.Management.Automation.RemoteException') {
+                throw 'Native boundary changed LASTEXITCODE or leaked exception type text'
+            }
         } finally { $ErrorActionPreference = $savedPreference }
         $checks++
     }
@@ -325,7 +367,8 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-unload-exit','driver-boundary-exception','invalid-sid','comma-sids',
         'range-sid','missing-profile','missing-ntuser','mixed-targets','whatif',
         'driver-no-targets','driver-mixed-targets','duplicates','duplicates-ineligible',
-        'driver-duplicates','driver-duplicates-ineligible')) {
+        'driver-duplicates','driver-duplicates-ineligible','expanded-profile','query-denied',
+        'driver-enumeration-failure','printer-enumeration-failure')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -341,12 +384,13 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             'driver-no-targets' { 0 } 'driver-mixed-targets' { 2 }
             'duplicates' { 2 } 'duplicates-ineligible' { 1 }
             'driver-duplicates' { 4 } 'driver-duplicates-ineligible' { 2 }
+            'expanded-profile' { 2 }
             default { 0 }
         }
         if ($output -notmatch "PAYLOADS_REMAINING:$expectedPayloads") {
             throw "$caseValue/$preferenceValue retained unexpected payloads:`n$output"
         }
-        $postDisassociation = ($caseValue -like 'driver-*' -and $caseValue -notin @('driver-no-targets','driver-mixed-targets','driver-duplicates-ineligible')) -or $caseValue -in @('success', 'mounted-success', 'duplicates',
+        $postDisassociation = ($caseValue -like 'driver-*' -and $caseValue -notin @('driver-no-targets','driver-mixed-targets','driver-duplicates-ineligible','driver-enumeration-failure')) -or $caseValue -in @('success', 'mounted-success', 'duplicates','expanded-profile',
             'import-failure', 'import-exception')
         if ($postDisassociation) {
             if ($output -notmatch '(?s)EXPORTED.*BUILT.*BUILT.*DISASSOCIATED.*HIVE_CHECKED') {
@@ -359,11 +403,27 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             $output -match 'HIVE_CHECKED|BUILT') {
             throw "Backup failure reached hive/payload preflight:`n$output"
         }
-        if ($caseValue -eq 'mounted-success' -and
+        if ($caseValue -in @('mounted-success','expanded-profile') -and
             $output -notmatch '(?s)BUILT.*DISASSOCIATED.*HIVE_MOUNTED.*IMPORTED.*HIVE_DISMOUNTED') {
             throw "Owned hive was not unloaded:`n$output"
         }
-        if ($caseValue -like '*duplicate*') {
+        if ($caseValue -eq 'printer-enumeration-failure') {
+            if ($exitCode -ne 1 -or $output -notmatch 'Could not enumerate printers.*enumeration failed.*Access is denied' -or
+                $output -match 'Nothing to do|No target users|RESTARTED:|RETURNED:|DISASSOCIATED|IMPORTED') {
+                throw "Printer enumeration failure was hidden:`n$output"
+            }
+        } elseif ($caseValue -eq 'driver-enumeration-failure') {
+            if ($exitCode -ne 1 -or $output -notmatch 'Could not enumerate target users.*ProfileList query failed.*Access is denied' -or
+                $output -match 'Nothing to do|No target users|RESTARTED:|RETURNED:|DISASSOCIATED|IMPORTED') {
+                throw "Enumeration failure was hidden:`n$output"
+            }
+        } elseif ($caseValue -eq 'query-denied') {
+            if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:False' -or
+                $output -notmatch 'DAF query failed.*exit 1.*Access is denied' -or
+                $output -match 'no DAF entry|not found|BUILT|DISASSOCIATED|IMPORTED') {
+                throw "DAF query failure was misreported:`n$output"
+            }
+        } elseif ($caseValue -like '*duplicate*') {
             $printerCount = if ($caseValue -like 'driver-*') { 2 } else { 1 }
             $installs = if ($caseValue -like '*ineligible') { 1 } else { 2 }
             $expectedExit = if ($caseValue -eq 'driver-duplicates-ineligible') { 1 } else { 0 }
@@ -390,7 +450,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 $output -notmatch "PREFERENCE_AFTER:$preferenceValue") {
                 throw "Direct-helper duplicate handling failed:`n$output"
             }
-        } elseif ($caseValue -in @('success', 'mounted-success')) {
+        } elseif ($caseValue -in @('success', 'mounted-success','expanded-profile')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:2' -or $output -notmatch 'RETURNED:True') {
                 throw "Success case failed under ${preferenceValue}:`n$output"
             }
@@ -467,6 +527,70 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         $checks++
     }
 }
+
+# Exercise real profile parsing/mount and registry error handling with host I/O mocked.
+& {
+    function Invoke-ConversionNative {
+        param($Command, $Arguments)
+        if ($script:registryFailure) {
+            return [pscustomobject]@{ ExitCode = 1; Output = @('ERROR: Access is denied.') }
+        }
+        return [pscustomobject]@{ ExitCode = 0; Output = @("ProfileImagePath    REG_EXPAND_SZ    $script:profileProbe") }
+    }
+    foreach ($path in @('C:relative', '\relative', 'C:\Users\..\other', '\\server\share\..\other', '%UNRESOLVED_UPCONVERT_VAR%\user')) {
+        $script:profileProbe = $path
+        $rejected = $false
+        try { Get-ProfileImagePath -UserSID 'S-1-5-21-1-2-3-1001' }
+        catch { $rejected = $_.Exception.Message -match 'fully qualified' }
+        if (-not $rejected) { throw "Ambiguous profile path accepted: $path" }
+    }
+    foreach ($path in @('C:\Users\test', '\\server\share\test', '%SystemDrive%\Users\test')) {
+        $script:profileProbe = $path
+        if ((Get-ProfileImagePath -UserSID 'S-1-5-21-1-2-3-1001') -cne
+            [Environment]::ExpandEnvironmentVariables($path)) { throw "Profile path changed unexpectedly: $path" }
+    }
+    $script:registryFailure = $true
+    foreach ($helper in @('Get-AllRealUserSIDs','Get-AllPerSystemShareIds','Get-ProfileImagePath')) {
+        $rejected = $false
+        try { & $helper }
+        catch { $rejected = $_.Exception.Message -match 'query failed|enumeration failed' -and $_.Exception.Message -match 'Access is denied' }
+        if (-not $rejected) { throw "Registry query failure hidden by $helper" }
+    }
+    function Get-Item {
+        [CmdletBinding()]
+        param($LiteralPath)
+        if ($script:missingHive) { throw [Management.Automation.ItemNotFoundException]::new('missing hive') }
+        if ($script:deniedHive) { throw [UnauthorizedAccessException]::new('denied hive') }
+        return [pscustomobject]@{}
+    }
+    if (-not (Test-HiveLoaded -UserSID 'test')) { throw 'Existing hive rejected' }
+    $script:missingHive = $true
+    if (Test-HiveLoaded -UserSID 'test') { throw 'Missing hive accepted' }
+    $script:missingHive = $false
+    $script:deniedHive = $true
+    $rejected = $false
+    try { Test-HiveLoaded -UserSID 'test' }
+    catch { $rejected = $_.Exception.Message -match 'denied hive' }
+    if (-not $rejected) { throw 'Inaccessible hive treated as unloaded' }
+}
+$checks += 14
+& {
+    Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+    $null = Invoke-ConversionNative -Command $env:ComSpec -Arguments @('/d','/c','exit /b 0')
+    if (Get-Variable LASTEXITCODE -Scope Global -ErrorAction Ignore) { throw 'Native wrapper created a caller LASTEXITCODE' }
+    $global:LASTEXITCODE = 321
+    function NoExitCode {}
+    $rejected = $false
+    try { Invoke-ConversionNative -Command 'NoExitCode' }
+    catch { $rejected = $_.Exception.Message -match 'did not return an exit code' }
+    if (-not $rejected -or $global:LASTEXITCODE -ne 321) { throw 'Native wrapper failure did not preserve caller exit code' }
+    function ThrowingNative { throw 'Injected invocation exception' }
+    $rejected = $false
+    try { Invoke-ConversionNative -Command 'ThrowingNative' }
+    catch { $rejected = $_.Exception.Message -match 'Injected invocation exception' }
+    if (-not $rejected -or $global:LASTEXITCODE -ne 321) { throw 'Native invocation exception lost caller exit code' }
+}
+$checks += 3
 
 # ACL policy cases use synthetic Windows ACLs and metadata; no host ACL is changed.
 $script:testAcl = [Security.AccessControl.DirectorySecurity]::new()
@@ -653,6 +777,38 @@ try {
     catch { $rejected = $_.Exception.Message -match 'collision' }
     if (-not $rejected) { throw 'Factory accepted an existing directory' }
     $checks++
+    # Simulate another creator after Exists, before managed CreateDirectory.
+    # An unexpected existing child must not be used, repaired, or removed.
+    $lateCollision = Join-Path $factoryFixture 'late-collision'
+    $lateFactory = $testFactory.Replace(
+        '$path = [IO.Path]::Combine($parent, "UPConvert-$([Guid]::NewGuid().ToString(''N''))")',
+        '$path = $lateCollision').Replace(
+        '$security = [Security.AccessControl.DirectorySecurity]::new()',
+        '$null = [IO.Directory]::CreateDirectory($path); [IO.File]::WriteAllText([IO.Path]::Combine($path, ''KEEP''), ''unchanged''); $security = [Security.AccessControl.DirectorySecurity]::new()')
+    . ([scriptblock]::Create($lateFactory))
+    $rejected = $false
+    try { New-PrivateStagingDirectory }
+    catch { $rejected = $_.Exception.Message -match 'owner or protected DACL differs' }
+    if (-not $rejected -or [IO.File]::ReadAllText((Join-Path $lateCollision 'KEEP')) -ne 'unchanged') {
+        throw 'Late directory collision was consumed or modified'
+    }
+    [IO.File]::Delete((Join-Path $lateCollision 'KEEP'))
+    $checks++
+    foreach ($sddl in @('O:BUG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
+        'O:SYG:SYD:AI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)',
+        'O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;FR;;;BU)')) {
+        $injectedAcl = [Security.AccessControl.DirectorySecurity]::new()
+        $injectedAcl.SetSecurityDescriptorSddlForm($sddl)
+        $postconditionFactory = $testFactory.Replace(
+            '$actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $path -ErrorAction Stop',
+            '$actual = $injectedAcl')
+        . ([scriptblock]::Create($postconditionFactory))
+        $rejected = $false
+        try { New-PrivateStagingDirectory }
+        catch { $rejected = $_.Exception.Message -match 'owner or protected DACL differs' }
+        if (-not $rejected) { throw "Unexpected postcreation security accepted: $sddl" }
+        $checks++
+    }
 } finally {
     if ([IO.File]::Exists($factoryMarker) -and
         [IO.File]::ReadAllText($factoryMarker) -eq 'UPConvert factory fixture') {
