@@ -176,12 +176,15 @@ if ($Case) {
             if ($Case -eq 'expanded-profile') {
                 $script:profileQueries++
                 if ($script:profileQueries -gt 2) { throw 'Profile path was reread after preparation' }
-                return [pscustomobject]@{ ProfileImagePath = '%UPConvertProfileFixture%' }
+                # Match the provider's one expansion of REG_EXPAND_SZ.
+                return [pscustomobject]@{ ProfileImagePath = [Environment]::ExpandEnvironmentVariables('%UPConvertProfileFixture%') }
             }
             if ($LiteralPath -match '1002$') {
                 if ($Case -like '*missing-key') { throw [Management.Automation.ItemNotFoundException]::new('missing profile key') }
                 if ($Case -like '*missing-value') { return [pscustomobject]@{} }
                 if ($Case -like '*provider-denied') { throw [UnauthorizedAccessException]::new('Injected profile provider access denied') }
+                if ($Case -like '*zero-profile') { return [pscustomobject]@{ ProfileImagePath = [int]0 } }
+                if ($Case -like '*qword-profile') { return [pscustomobject]@{ ProfileImagePath = [long]0 } }
             }
             return [pscustomobject]@{ ProfileImagePath = $fixture }
         }
@@ -266,7 +269,7 @@ if ($Case) {
             Set-Item Function:\Get-ProfileImagePath $script:originalProfile
             Set-Item Function:\Mount-UserHive $script:originalMount
         }
-        if ($Case -match '^driver-(?:auto|explicit)-(?:missing-key|missing-value|provider-denied)$') {
+        if ($Case -match '^driver-(?:auto|explicit)-(?:missing-key|missing-value|provider-denied|zero-profile|qword-profile)$') {
             Set-Item Function:\Get-ProfileImagePath $script:originalProfile
         }
         $share = '11111111-2222-3333-4444-555555555555'
@@ -413,7 +416,9 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-auto-import-error','driver-auto-whatif','driver-auto-invalid-sid',
         'driver-auto-mount-failure','driver-auto-invalid-path',
         'driver-auto-missing-key','driver-explicit-missing-key',
-        'driver-auto-missing-value','driver-explicit-missing-value','driver-auto-provider-denied')) {
+        'driver-auto-missing-value','driver-explicit-missing-value','driver-auto-provider-denied',
+        'driver-auto-zero-profile','driver-explicit-zero-profile',
+        'driver-auto-qword-profile','driver-explicit-qword-profile')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -439,6 +444,8 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             'driver-auto-missing-key' { 2 } 'driver-explicit-missing-key' { 2 }
             'driver-auto-missing-value' { 2 } 'driver-explicit-missing-value' { 2 }
             'driver-auto-provider-denied' { 2 }
+            'driver-auto-zero-profile' { 2 } 'driver-explicit-zero-profile' { 2 }
+            'driver-auto-qword-profile' { 2 } 'driver-explicit-qword-profile' { 2 }
             default { 0 }
         }
         if ($output -notmatch "PAYLOADS_REMAINING:$expectedPayloads") {
@@ -493,6 +500,10 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 'driver-auto-no-eligible' { 'No eligible targets.*leaving the per-system printer unchanged' }
                 'driver-auto-query-error' { 'Injected ProfileImagePath query failed' }
                 'driver-auto-provider-denied' { 'Injected profile provider access denied' }
+                'driver-auto-zero-profile' { 'ProfileImagePath must be a string' }
+                'driver-explicit-zero-profile' { 'ProfileImagePath must be a string' }
+                'driver-auto-qword-profile' { 'ProfileImagePath must be a string' }
+                'driver-explicit-qword-profile' { 'ProfileImagePath must be a string' }
                 'driver-auto-hive-error' { 'Injected hive access denied' }
                 'driver-auto-path-error' { 'Injected profile file access denied' }
                 'driver-auto-invalid-path' { 'fully qualified local drive path' }
@@ -649,10 +660,9 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         catch { $rejected = $_.Exception.Message -match 'fully qualified' }
         if (-not $rejected) { throw "Ambiguous profile path accepted: $path" }
     }
-    foreach ($path in @('C:\Users\test', '%SystemDrive%\Users\test')) {
+    foreach ($path in @('C:\Users\test', 'C:\Users\100%ok', 'C:\Users\100%ok\50%done')) {
         $script:profileProbe = $path
-        if ((Get-ProfileImagePath -UserSID 'S-1-5-21-1-2-3-1001') -cne
-            [Environment]::ExpandEnvironmentVariables($path)) { throw "Profile path changed unexpectedly: $path" }
+        if ((Get-ProfileImagePath -UserSID 'S-1-5-21-1-2-3-1001') -cne $path) { throw "Profile path changed unexpectedly: $path" }
     }
     $script:missingProfileKey = $true
     if ($null -ne (Get-ProfileImagePath -UserSID 'test')) { throw 'Missing profile key was not absent' }
@@ -660,11 +670,20 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     $script:missingProfileValue = $true
     if ($null -ne (Get-ProfileImagePath -UserSID 'test')) { throw 'Missing profile value was not absent' }
     $script:missingProfileValue = $false
-    $script:profileProbe = 42
+    foreach ($invalidValue in @(42, [int]0, [long]0)) {
+        $script:profileProbe = $invalidValue
+        $rejected = $false
+        try { Get-ProfileImagePath -UserSID 'test' }
+        catch { $rejected = $_.Exception.Message -match 'must be a string' }
+        if (-not $rejected) { throw 'Nonstring profile value accepted' }
+    }
+    $script:profileProbe = ''
+    if ($null -ne (Get-ProfileImagePath -UserSID 'test')) { throw 'Empty string profile was not absent' }
+    $script:profileProbe = 'C:\Users\%SystemDrive%\test'
     $rejected = $false
     try { Get-ProfileImagePath -UserSID 'test' }
-    catch { $rejected = $_.Exception.Message -match 'must be a string' }
-    if (-not $rejected) { throw 'Nonstring profile value accepted' }
+    catch { $rejected = $_.Exception.Message -match 'unresolved variables' }
+    if (-not $rejected) { throw 'Provider-returned variable token was expanded a second time' }
     $script:registryFailure = $true
     foreach ($helper in @('Get-AllRealUserSIDs','Get-AllPerSystemShareIds','Get-ProfileImagePath')) {
         $rejected = $false
@@ -689,7 +708,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     catch { $rejected = $_.Exception.Message -match 'denied hive' }
     if (-not $rejected) { throw 'Inaccessible hive treated as unloaded' }
 }
-$checks += 20
+$checks += 25
 & {
     Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
     $null = Invoke-ConversionNative -Command $env:ComSpec -Arguments @('/d','/c','exit /b 0')

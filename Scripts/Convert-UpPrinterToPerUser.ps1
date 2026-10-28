@@ -48,6 +48,14 @@ Ask your administrator to review any rejected ancestor/root permissions.
 Retained files are sensitive backups, not managed archives. Arrange secure
 retention and remove printed run directories when no longer required. The empty
 protected UPConvert root is kept for reuse; the script never removes it.
+Exact descriptor comparison intentionally fails closed if an administrator
+changes even DACL control flags. To reset an altered root, stop all conversions,
+securely archive/remove any retained run directories, then verify the exact
+Windows\UPConvert path is an ordinary, non-reparse, empty directory. From an
+approved elevated console, use [IO.Directory]::Delete($rootPath, $false) with that
+verified path; non-recursive deletion refuses nonempty roots. Do not delete a
+reparse point or an unexplained/preexisting directory. The next run recreates
+the protected root. No permission repair or automatic deletion is performed.
 Profile hive loading supports local fully qualified drive paths only, not UNC
 or device paths, to avoid SYSTEM authentication to remote profile hosts.
 
@@ -414,10 +422,13 @@ function Get-ProfileImagePath {
         return $null
     }
     $value = $values.PSObject.Properties['ProfileImagePath']
-    if ($null -eq $value -or $null -eq $value.Value -or $value.Value -eq '') { return $null }
+    if ($null -eq $value -or $null -eq $value.Value) { return $null }
     if ($value.Value -isnot [string]) { throw "ProfileImagePath must be a string for $UserSID." }
-    $profilePath = [Environment]::ExpandEnvironmentVariables($value.Value)
-    if ($profilePath -notmatch '^[a-zA-Z]:\\' -or $profilePath -match '[/%]' -or
+    if ($value.Value -eq '') { return $null }
+    # The registry provider already expands REG_EXPAND_SZ; never expand twice.
+    $profilePath = $value.Value
+    if ($profilePath -notmatch '^[a-zA-Z]:\\' -or $profilePath.Contains('/') -or
+        $profilePath -match '%[^%\\]+%' -or
         $profilePath.Substring(2).Contains(':') -or
         $profilePath -match '(?:^|\\)\.\.?(?:\\|$)') {
         throw "ProfileImagePath must be a fully qualified local drive path without dot segments, unresolved variables or alternate streams: $profilePath"
