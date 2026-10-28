@@ -146,7 +146,7 @@ if ($Case) {
                 throw 'Injected first-user hive-check exception'
             }
             if ($Case -in @('mixed-targets','driver-mixed-targets')) { return $script:hiveLoaded }
-            if ($Case -in @('hive-unavailable','missing-profile','missing-ntuser')) { return $false }
+            if ($Case -in @('hive-unavailable','missing-profile','missing-ntuser','directory-ntuser')) { return $false }
             if ($Case -in @('mounted-build-failure', 'mounted-success','expanded-profile',
                 'driver-mount-exception','driver-unload-exception','driver-import-unload-exception','driver-unload-exit')) {
                 return $script:hiveLoaded
@@ -226,7 +226,13 @@ if ($Case) {
             if ($Case -eq 'driver-auto-path-error' -and $LiteralPath -like '*\denied\NTUSER.DAT') {
                 throw [UnauthorizedAccessException]::new('Injected profile file access denied')
             }
-            if ($LiteralPath) { return [IO.File]::Exists($LiteralPath) }
+            if ($LiteralPath) {
+                switch ($PathType) {
+                    'Leaf' { return [IO.File]::Exists($LiteralPath) }
+                    'Container' { return [IO.Directory]::Exists($LiteralPath) }
+                    default { return [IO.File]::Exists($LiteralPath) -or [IO.Directory]::Exists($LiteralPath) }
+                }
+            }
             return $true
         }
         Set-Item -LiteralPath "Function:\$env:SystemRoot\System32\pairtool.exe" -Value {
@@ -268,6 +274,21 @@ if ($Case) {
             $env:UPConvertProfileFixture = $fixture
             Set-Item Function:\Get-ProfileImagePath $script:originalProfile
             Set-Item Function:\Mount-UserHive $script:originalMount
+        }
+        if ($Case -eq 'directory-ntuser') {
+            $ntuserFixture = Join-Path $fixture 'NTUSER.DAT'
+            [IO.File]::Delete($ntuserFixture)
+            $null = [IO.Directory]::CreateDirectory($ntuserFixture)
+            if (-not (Test-Path -LiteralPath $ntuserFixture) -or
+                -not (Test-Path -LiteralPath $ntuserFixture -PathType Any) -or
+                -not (Test-Path -LiteralPath $ntuserFixture -PathType Container) -or
+                (Test-Path -LiteralPath $ntuserFixture -PathType Leaf)) {
+                throw 'Test-Path fixture does not distinguish file/directory existence'
+            }
+            if (& $script:originalMount -UserSID 'S-1-5-21-1-2-3-1001' -ProfilePath $fixture) {
+                throw 'Mount accepted a directory named NTUSER.DAT'
+            }
+            Write-Host 'MOUNT_DIRECTORY_REJECTED'
         }
         if ($Case -match '^driver-(?:auto|explicit)-(?:missing-key|missing-value|provider-denied|zero-profile|qword-profile)$') {
             Set-Item Function:\Get-ProfileImagePath $script:originalProfile
@@ -372,6 +393,23 @@ if ($Case) {
 
 $runtime = (Get-Process -Id $PID).Path
 $checks = 0
+# Read-only integration probe: unlike profile mocks, this exercises the actual
+# registry provider against the standard SYSTEM profile's expandable value.
+$systemProfileKey = Microsoft.PowerShell.Management\Get-Item -LiteralPath 'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\S-1-5-18' -ErrorAction Stop
+try {
+    if ($systemProfileKey.GetValueKind('ProfileImagePath') -ne [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+        throw 'SYSTEM profile expansion probe requires an ExpandString value'
+    }
+    $rawProfile = $systemProfileKey.GetValue('ProfileImagePath', $null,
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    $providerProfile = (Microsoft.PowerShell.Management\Get-ItemProperty -LiteralPath $systemProfileKey.PSPath -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath
+    if ($rawProfile -notmatch '%[^%]+%' -or $providerProfile.Contains('%') -or
+        $providerProfile -cne [Environment]::ExpandEnvironmentVariables($rawProfile) -or
+        (Get-ProfileImagePath -UserSID 'S-1-5-18') -cne $providerProfile) {
+        throw 'Real registry-provider profile expansion differs from the resolver contract'
+    }
+} finally { $systemProfileKey.Close() }
+$checks++
 $entraTargets = @(Get-UniqueTargetSIDs -TargetSIDs @(
     's-1-12-1-01-2-3-4294967295', 'S-1-12-1-1-2-3-4294967295',
     'S-1-12-1-4-5-6-7') 6>$null)
@@ -418,7 +456,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-auto-missing-key','driver-explicit-missing-key',
         'driver-auto-missing-value','driver-explicit-missing-value','driver-auto-provider-denied',
         'driver-auto-zero-profile','driver-explicit-zero-profile',
-        'driver-auto-qword-profile','driver-explicit-qword-profile')) {
+        'driver-auto-qword-profile','driver-explicit-qword-profile','directory-ntuser')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -561,12 +599,16 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:2' -or $output -notmatch 'RETURNED:True') {
                 throw "Success case failed under ${preferenceValue}:`n$output"
             }
-        } elseif ($caseValue -in @('hive-unavailable','invalid-sid','comma-sids','range-sid','missing-profile','missing-ntuser')) {
+        } elseif ($caseValue -in @('hive-unavailable','invalid-sid','comma-sids','range-sid','missing-profile','missing-ntuser','directory-ntuser')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:0' -or
                 $output -notmatch 'RETURNED:False' -or $output -match 'IMPORTED') {
                 throw "Unavailable hives were not reported as incomplete migration:`n$output"
             }
             if ($output -notmatch 'No eligible targets') { throw "No-eligible guard missing:`n$output" }
+            if ($caseValue -eq 'directory-ntuser' -and
+                ($output -notmatch 'MOUNT_DIRECTORY_REJECTED' -or $output -notmatch 'NTUSER.DAT is missing')) {
+                throw "Directory named NTUSER.DAT passed mount/preflight checks:`n$output"
+            }
         } elseif ($caseValue -eq 'mixed-targets') {
             if ($exitCode -ne 0 -or $output -notmatch 'RETURNED:False' -or
                 $output -notmatch 'INSTALLS:1' -or $output -notmatch 'DISASSOCIATED' -or
@@ -653,7 +695,8 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         return [pscustomobject]@{ ExitCode = 0; Output = @("ProfileImagePath    REG_EXPAND_SZ    $script:profileProbe") }
     }
     foreach ($path in @('C:relative', '\relative', 'C:\Users\..\other', '\\server\share\..\other', '%UNRESOLVED_UPCONVERT_VAR%\user',
-        'C:\Users/../other','C:\Users\%UNRESOLVED_UPCONVERT_VAR%\test','C:\Users\test:stream','\\server\share\test')) {
+        'C:\Users/../other','C:\Users\%UNRESOLVED_UPCONVERT_VAR%\test','C:\Users\test:stream','\\server\share\test',
+        'C:\Users\a%b%c')) {
         $script:profileProbe = $path
         $rejected = $false
         try { Get-ProfileImagePath -UserSID 'S-1-5-21-1-2-3-1001' }
@@ -708,7 +751,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     catch { $rejected = $_.Exception.Message -match 'denied hive' }
     if (-not $rejected) { throw 'Inaccessible hive treated as unloaded' }
 }
-$checks += 25
+$checks += 26
 & {
     Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
     $null = Invoke-ConversionNative -Command $env:ComSpec -Arguments @('/d','/c','exit /b 0')

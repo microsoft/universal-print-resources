@@ -58,6 +58,9 @@ reparse point or an unexplained/preexisting directory. The next run recreates
 the protected root. No permission repair or automatic deletion is performed.
 Profile hive loading supports local fully qualified drive paths only, not UNC
 or device paths, to avoid SYSTEM authentication to remote profile hosts.
+Literal unmatched percent characters are supported, but a matched percent pair
+within one path component (for example a%b%c) is rejected as a possible unresolved
+environment token, even when it is a literal directory name.
 
 A nonzero pairtool result is reported as incomplete, but imports still continue
 as in the original script; both associations may remain. Do not blindly retry a
@@ -459,7 +462,7 @@ function Mount-UserHive {
         return $false
     }
     $ntuser = [IO.Path]::Combine($ProfilePath, 'NTUSER.DAT')
-    if (-not (Test-Path -LiteralPath $ntuser)) {
+    if (-not (Test-Path -LiteralPath $ntuser -PathType Leaf -ErrorAction Stop)) {
         Write-Host "  WARN: NTUSER.DAT not found at $ntuser." -ForegroundColor Yellow
         return $false
     }
