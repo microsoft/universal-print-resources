@@ -274,11 +274,8 @@ function New-PrivateStagingDirectory {
     param ([switch]$WhatIfMode)
     $owner = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     if ($WhatIfMode) {
+        # The entry point validates elevation; WhatIf runs use that caller's owner.
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-        if (-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole(
-                [Security.Principal.WindowsBuiltInRole]::Administrator)) {
-            throw 'WhatIf preparation requires SYSTEM or an elevated administrator.'
-        }
         $owner = $identity.User
     }
     # Use the OS Windows location, not caller-controlled temp environment overrides.
@@ -531,6 +528,8 @@ function Mount-UserHive {
     Write-Host "  Loading hive HKU\$UserSID from $ntuser" -ForegroundColor DarkGray
     $result = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('load', "HKU\$UserSID", $ntuser)
     if ($result.ExitCode -ne 0) {
+        # A concurrent logon can load the hive after our probe. Let the caller use
+        # it, but return false so we never claim responsibility for unloading it.
         if (Test-HiveLoaded -UserSID $UserSID) { return $false }
         throw "reg load failed for $UserSID (exit $($result.ExitCode)): $($result.Output -join ' ')"
     }
@@ -539,6 +538,8 @@ function Mount-UserHive {
 
 function Assert-LocalProfileHivePath {
     param ([string]$Path)
+    # Policy rejections use NotSupportedException so preflight can warn/skip
+    # discovered targets without downgrading filesystem inspection/access errors.
     $root = [IO.Path]::GetPathRoot($Path)
     if ($root -notmatch '^[A-Za-z]:\\$' -or
         [IO.DriveInfo]::new($root).DriveType -ne [IO.DriveType]::Fixed) {
@@ -856,6 +857,7 @@ function ConvertTo-CanonicalUserSID {
     foreach ($component in ($UserSID -split '-')[4..7]) {
         $null = [uint32]::Parse($component, [Globalization.CultureInfo]::InvariantCulture)
     }
+    # Normalize equivalent spellings before deduplication and registry-path use.
     return [Security.Principal.SecurityIdentifier]::new($UserSID).Value
 }
 

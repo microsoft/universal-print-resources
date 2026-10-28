@@ -1123,16 +1123,13 @@ try {
         Initialize-ProtectedStagingDirectory -Path $adminRoot -Security $adminSecurity
         Initialize-ProtectedStagingDirectory -Path $adminRoot -Security $adminSecurity
         Assert-ProtectedStagingDirectory -Path $adminRoot -Security $adminSecurity
-        $whatIfPath = New-PrivateStagingDirectory -WhatIfMode
-        $whatIfAcl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $whatIfPath
-        if ($whatIfAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $identity.User.Value) {
-            throw 'WhatIf factory did not use the elevated caller owner'
-        }
-    } else {
-        $rejected = $false
-        try { New-PrivateStagingDirectory -WhatIfMode }
-        catch { $rejected = $_.Exception.Message -match 'elevated administrator' }
-        if (-not $rejected) { throw 'WhatIf factory accepted a nonelevated caller' }
+    }
+    # Entry-point cases cover elevation. This isolated factory checks ownership
+    # with the available token, without accessing the production Windows root.
+    $whatIfPath = New-PrivateStagingDirectory -WhatIfMode
+    $whatIfAcl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $whatIfPath
+    if ($whatIfAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $identity.User.Value) {
+        throw 'WhatIf factory did not use the caller owner'
     }
     $checks++
     $unsafeRoot = Join-Path $factoryFixture 'unsafe-root'
