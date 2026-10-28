@@ -10,7 +10,8 @@ Sysinternals PsExec installation (or substitute pwsh.exe for PowerShell 7).
 Use ShareId for one printer or AllUPPrinters for all, with your TenantId.
 Conversion skips invalid or unavailable users and continues eligible users.
 Missing profile paths or NTUSER.DAT files are warning-only skips for automatically
-discovered targets, but count as incomplete for explicit UserSIDs. Query/access,
+discovered targets, as are unsupported hive locations (non-fixed drives or
+reparse paths); these count as incomplete for explicit UserSIDs. Query/access,
 invalid target/path, staging and migration errors remain failures in either mode.
 Summary install counts exclude warning-only skips and report them separately.
 Exit 1 therefore does not imply nothing changed or that retrying is safe.
@@ -61,6 +62,10 @@ Profile hive loading supports local fully qualified drive paths only, not UNC
 or device paths, to avoid SYSTEM authentication to remote profile hosts.
 Before preparing an unloaded profile and immediately before reg load, require a
 fixed drive and reject reparse points along the hive path. These checks are not
+compatible with junctions or volume mount points anywhere along the path,
+including C:\Users. Unsupported locations are skipped with a warning for
+automatically discovered targets, but fail explicit UserSIDs. Inspection/access
+errors remain failures in both modes. These checks are not
 atomic: a user-writable profile can change between inspection and reg load.
 Run migration while target users and other profile writers are quiescent; this
 is not a race-resistant hive-loading mechanism for actively adversarial profiles.
@@ -488,7 +493,8 @@ function Test-HiveLoaded {
 }
 
 function Mount-UserHive {
-    # Returns $true if WE loaded it (caller should unload), $false if it was already loaded or failed.
+    # True means we loaded it and must unload it; false means already loaded or
+    # missing profile/hive. Other load failures throw with native diagnostics.
     param ([string]$UserSID, [string]$ProfilePath)
     if (Test-HiveLoaded -UserSID $UserSID) { return $false }
     if (-not $ProfilePath) { $ProfilePath = Get-ProfileImagePath -UserSID $UserSID }
@@ -505,6 +511,7 @@ function Mount-UserHive {
     Write-Host "  Loading hive HKU\$UserSID from $ntuser" -ForegroundColor DarkGray
     $result = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('load', "HKU\$UserSID", $ntuser)
     if ($result.ExitCode -ne 0) {
+        if (Test-HiveLoaded -UserSID $UserSID) { return $false }
         throw "reg load failed for $UserSID (exit $($result.ExitCode)): $($result.Output -join ' ')"
     }
     return $true
@@ -515,7 +522,7 @@ function Assert-LocalProfileHivePath {
     $root = [IO.Path]::GetPathRoot($Path)
     if ($root -notmatch '^[A-Za-z]:\\$' -or
         [IO.DriveInfo]::new($root).DriveType -ne [IO.DriveType]::Fixed) {
-        throw "Profile hive requires a fixed local drive: $Path"
+        throw [NotSupportedException]::new("Profile hive requires a fixed local drive: $Path")
     }
     $directory = [IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($Path))
     $chain = @($Path)
@@ -526,7 +533,7 @@ function Assert-LocalProfileHivePath {
     foreach ($entry in $chain) {
         $item = Get-Item -LiteralPath $entry -Force -ErrorAction Stop
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
-            throw "Profile hive path cannot contain a reparse point: $entry"
+            throw [NotSupportedException]::new("Profile hive path cannot contain a reparse point: $entry")
         }
     }
     # These are point-in-time checks. User-writable profiles are not pinned
@@ -955,7 +962,8 @@ function Convert-OnePrinter {
                         if (-not (Test-Path -LiteralPath $ntuser -PathType Leaf -ErrorAction Stop)) {
                             $ineligibleReason = "NTUSER.DAT is missing: $ntuser"
                         } else {
-                            Assert-LocalProfileHivePath -Path $ntuser
+                            try { Assert-LocalProfileHivePath -Path $ntuser }
+                            catch [NotSupportedException] { $ineligibleReason = $_.Exception.Message }
                         }
                     }
                 }

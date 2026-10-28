@@ -68,6 +68,12 @@ if ($Case) {
         }
         function Assert-LocalProfileHivePath {
             param($Path)
+            if ($Case -match '^driver-(?:auto|explicit)-(?:reparse|nonfixed|inspection-error)$' -and
+                $script:profileCheckSID -match '1002$') {
+                if ($Case -like '*inspection-error') { throw [UnauthorizedAccessException]::new('Injected profile inspection denied') }
+                $reason = if ($Case -like '*reparse') { 'Profile hive path cannot contain a reparse point' } else { 'Profile hive requires a fixed local drive' }
+                throw [NotSupportedException]::new($reason)
+            }
             if ($Path -cne [IO.Path]::Combine($fixture,'NTUSER.DAT') -and $Case -ne 'directory-ntuser') {
                 throw 'Profile safety check escaped isolated fixture'
             }
@@ -105,11 +111,16 @@ if ($Case) {
                     return
                 }
                 'load' {
-                    if ($Case -ne 'expanded-profile' -or
+                    if ($Case -notin @('expanded-profile','mount-race') -or
                         $args[2] -cne [IO.Path]::Combine($fixture, 'NTUSER.DAT')) {
                         throw "Wrong expanded hive path: $($args[2])"
                     }
                     $script:hiveLoaded = $true
+                    if ($Case -eq 'mount-race') {
+                        $global:LASTEXITCODE = 5
+                        Write-Host 'HIVE_LOADED_EXTERNALLY'
+                        return 'Injected concurrent hive load'
+                    }
                     Write-Host 'HIVE_MOUNTED'
                     return
                 }
@@ -171,7 +182,7 @@ if ($Case) {
             }
             if ($Case -in @('mixed-targets','driver-mixed-targets')) { return $script:hiveLoaded }
             if ($Case -in @('hive-unavailable','missing-profile','missing-ntuser','directory-ntuser')) { return $false }
-            if ($Case -in @('mounted-build-failure', 'mounted-success','expanded-profile',
+            if ($Case -in @('mounted-build-failure', 'mounted-success','expanded-profile','mount-race',
                 'driver-mount-exception','driver-unload-exception','driver-import-unload-exception','driver-unload-exit')) {
                 return $script:hiveLoaded
             }
@@ -179,6 +190,7 @@ if ($Case) {
         }
         function Get-ProfileImagePath {
             param([string]$UserSID)
+            $script:profileCheckSID = $UserSID
             if ($Case -eq 'driver-auto-no-eligible') { return $null }
             if ($Case -match '^driver-(?:auto|explicit)-' -and $UserSID -match '1002$') {
                 if ($Case -in @('driver-auto-stale','driver-explicit-stale','driver-auto-whatif','driver-auto-import-error')) { return $null }
@@ -216,7 +228,7 @@ if ($Case) {
             param([string]$UserSID, [string]$ProfilePath)
             Write-Host 'HIVE_MOUNTED'
             $script:mountCount++
-            if ($Case -eq 'driver-auto-mount-failure' -and $UserSID -match '1002$') { return $false }
+            if ($Case -eq 'driver-auto-mount-failure' -and $UserSID -match '1002$') { throw 'reg load failed for fixture (exit 5): Injected load denied' }
             if ($Case -eq 'driver-mount-exception' -and $script:mountCount -eq 1) {
                 throw 'Injected first-user hive-load exception'
             }
@@ -300,6 +312,7 @@ if ($Case) {
             Set-Item Function:\Get-ProfileImagePath $script:originalProfile
             Set-Item Function:\Mount-UserHive $script:originalMount
         }
+        if ($Case -eq 'mount-race') { Set-Item Function:\Mount-UserHive $script:originalMount }
         if ($Case -eq 'directory-ntuser') {
             $ntuserFixture = Join-Path $fixture 'NTUSER.DAT'
             [IO.File]::Delete($ntuserFixture)
@@ -476,7 +489,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     }
 }
 foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
-    foreach ($caseValue in @('success', 'mounted-success', 'hive-unavailable',
+    foreach ($caseValue in @('success', 'mounted-success', 'mount-race', 'hive-unavailable',
         'parent-failure', 'build-failure', 'mounted-build-failure', 'write-failure',
         'read-failure', 'backup-collision', 'export-failure', 'import-failure', 'import-exception',
         'driver-failure', 'driver-import-failure', 'driver-service-failure',
@@ -497,7 +510,9 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-auto-zero-profile','driver-explicit-zero-profile',
         'driver-auto-qword-profile','driver-explicit-qword-profile','directory-ntuser','early-whatif-elevation',
         'driver-staging-only-failure','driver-query-only-failure','driver-export-only-failure','driver-empty-sid',
-        'driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart')) {
+        'driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart',
+        'driver-auto-reparse','driver-explicit-reparse','driver-auto-nonfixed','driver-explicit-nonfixed',
+        'driver-auto-inspection-error','driver-explicit-inspection-error')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -514,6 +529,10 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             'duplicates' { 2 } 'duplicates-ineligible' { 1 }
             'driver-duplicates' { 4 } 'driver-duplicates-ineligible' { 2 }
             'expanded-profile' { 2 }
+            'mount-race' { 2 }
+            'driver-auto-reparse' { 2 } 'driver-explicit-reparse' { 2 }
+            'driver-auto-nonfixed' { 2 } 'driver-explicit-nonfixed' { 2 }
+            'driver-auto-inspection-error' { 2 } 'driver-explicit-inspection-error' { 2 }
             'driver-pair-only-exception' { 1 } 'driver-import-only-exception' { 1 }
             'driver-import-only-success' { 1 } 'driver-skip-restart' { 1 }
             'driver-auto-stale' { 2 } 'driver-explicit-stale' { 2 }
@@ -536,7 +555,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         $restartCase = $caseValue -in @('driver-staging-only-failure','driver-query-only-failure','driver-export-only-failure','driver-empty-sid',
             'driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart')
         $postDisassociation = ($caseValue -like 'driver-*' -and -not $policyCase -and -not $restartCase -and $caseValue -notin @('driver-no-targets','driver-mixed-targets','driver-duplicates-ineligible','driver-enumeration-failure')) -or $caseValue -in @('success', 'mounted-success', 'duplicates','expanded-profile',
-            'import-failure', 'import-exception')
+            'import-failure', 'import-exception','mount-race')
         if ($postDisassociation) {
             if ($output -notmatch '(?s)EXPORTED.*BUILT.*BUILT.*DISASSOCIATED.*HIVE_CHECKED') {
                 throw "Payloads were not fully prepared before disassociation:`n$output"
@@ -562,7 +581,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 throw "WhatIf entry-point elevation diagnostic failed:`n$output"
             }
         } elseif ($policyCase) {
-            $warningOnly = $caseValue -in @('driver-auto-stale','driver-auto-missing-ntuser','driver-auto-whatif','driver-auto-missing-key','driver-auto-missing-value')
+            $warningOnly = $caseValue -in @('driver-auto-stale','driver-auto-missing-ntuser','driver-auto-whatif','driver-auto-missing-key','driver-auto-missing-value','driver-auto-reparse','driver-auto-nonfixed')
             $expectedExit = if ($warningOnly) { 0 } else { 1 }
             $failedCount = if ($warningOnly) { 0 } elseif ($caseValue -eq 'driver-auto-import-error') { 1 } else { 2 }
             $skips = if ($caseValue -eq 'driver-auto-no-eligible') { 2 } elseif ($warningOnly -or $caseValue -eq 'driver-auto-import-error') { 1 } else { 0 }
@@ -604,7 +623,13 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 'driver-auto-invalid-sid' { "Ineligible target 'not-a-sid'" }
                 'driver-auto-build-error' { 'Private payload preparation failed' }
                 'driver-auto-import-error' { 'reg import failed' }
-                'driver-auto-mount-failure' { 'hive not available' }
+                'driver-auto-mount-failure' { 'reg load failed.*exit 5.*Injected load denied' }
+                'driver-auto-reparse' { 'cannot contain a reparse point' }
+                'driver-explicit-reparse' { 'cannot contain a reparse point' }
+                'driver-auto-nonfixed' { 'requires a fixed local drive' }
+                'driver-explicit-nonfixed' { 'requires a fixed local drive' }
+                'driver-auto-inspection-error' { 'Injected profile inspection denied' }
+                'driver-explicit-inspection-error' { 'Injected profile inspection denied' }
                 default { 'ProfileImagePath is missing|NTUSER.DAT is missing' }
             }
             if ($output -notmatch $expectedDiagnostic) { throw "Policy case lost diagnostic:`n$output" }
@@ -651,9 +676,13 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 $output -notmatch "PREFERENCE_AFTER:$preferenceValue") {
                 throw "Direct-helper duplicate handling failed:`n$output"
             }
-        } elseif ($caseValue -in @('success', 'mounted-success','expanded-profile')) {
+        } elseif ($caseValue -in @('success', 'mounted-success','expanded-profile','mount-race')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:2' -or $output -notmatch 'RETURNED:True') {
                 throw "Success case failed under ${preferenceValue}:`n$output"
+            }
+            if ($caseValue -eq 'mount-race' -and
+                ($output -notmatch 'HIVE_LOADED_EXTERNALLY' -or $output -match 'HIVE_DISMOUNTED|state uncertain')) {
+                throw "Concurrent hive load was skipped or externally owned hive was unloaded:`n$output"
             }
         } elseif ($caseValue -in @('hive-unavailable','invalid-sid','comma-sids','range-sid','missing-profile','missing-ntuser','directory-ntuser')) {
             if ($exitCode -ne 0 -or $output -notmatch 'INSTALLS:0' -or
