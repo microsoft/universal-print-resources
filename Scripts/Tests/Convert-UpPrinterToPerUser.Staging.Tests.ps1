@@ -70,11 +70,6 @@ if ($Case) {
                     return
                 }
                 'query' {
-                    if ($Case -eq 'expanded-profile' -and $args -contains 'ProfileImagePath') {
-                        $script:profileQueries++
-                        if ($script:profileQueries -gt 2) { throw 'Profile path was reread after preparation' }
-                        return '    ProfileImagePath    REG_EXPAND_SZ    %UPConvertProfileFixture%'
-                    }
                     $script:queryCount++
                     if ($Case -in @('driver-enumeration-failure','printer-enumeration-failure','query-denied')) {
                         $global:LASTEXITCODE = 1
@@ -165,7 +160,7 @@ if ($Case) {
                 if ($Case -in @('driver-auto-stale','driver-explicit-stale','driver-auto-whatif','driver-auto-import-error')) { return $null }
                 if ($Case -in @('driver-auto-missing-ntuser','driver-explicit-missing-ntuser')) { return [IO.Path]::Combine($fixture,'absent') }
                 if ($Case -eq 'driver-auto-query-error') { throw 'Injected ProfileImagePath query failed: Access is denied.' }
-                if ($Case -eq 'driver-auto-invalid-path') { throw 'ProfileImagePath must be a fully qualified drive or UNC path without dot segments.' }
+                if ($Case -eq 'driver-auto-invalid-path') { throw 'ProfileImagePath must be a fully qualified local drive path without dot segments.' }
                 if ($Case -eq 'driver-auto-path-error') { return [IO.Path]::Combine($fixture,'denied') }
             }
             if ($Case -like '*duplicate*ineligible' -and $UserSID -eq 'S-1-5-21-1-2-3-1001') { return $null }
@@ -173,6 +168,22 @@ if ($Case) {
                 ($Case -in @('mixed-targets','driver-mixed-targets') -and $UserSID -match '1002$')) { return $null }
             if ($Case -eq 'missing-ntuser') { return [IO.Path]::Combine($fixture,'absent') }
             return $fixture
+        }
+        function Get-ItemProperty {
+            [CmdletBinding()]
+            param([string]$LiteralPath)
+            if ($LiteralPath -notlike 'Registry::HKEY_LOCAL_MACHINE\*\ProfileList\S-1-*') { throw 'Profile lookup escaped fixture' }
+            if ($Case -eq 'expanded-profile') {
+                $script:profileQueries++
+                if ($script:profileQueries -gt 2) { throw 'Profile path was reread after preparation' }
+                return [pscustomobject]@{ ProfileImagePath = '%UPConvertProfileFixture%' }
+            }
+            if ($LiteralPath -match '1002$') {
+                if ($Case -like '*missing-key') { throw [Management.Automation.ItemNotFoundException]::new('missing profile key') }
+                if ($Case -like '*missing-value') { return [pscustomobject]@{} }
+                if ($Case -like '*provider-denied') { throw [UnauthorizedAccessException]::new('Injected profile provider access denied') }
+            }
+            return [pscustomobject]@{ ProfileImagePath = $fixture }
         }
         function Mount-UserHive {
             param([string]$UserSID, [string]$ProfilePath)
@@ -254,6 +265,9 @@ if ($Case) {
             $env:UPConvertProfileFixture = $fixture
             Set-Item Function:\Get-ProfileImagePath $script:originalProfile
             Set-Item Function:\Mount-UserHive $script:originalMount
+        }
+        if ($Case -match '^driver-(?:auto|explicit)-(?:missing-key|missing-value|provider-denied)$') {
+            Set-Item Function:\Get-ProfileImagePath $script:originalProfile
         }
         $share = '11111111-2222-3333-4444-555555555555'
         $arguments = @{
@@ -397,7 +411,9 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-explicit-missing-ntuser','driver-auto-no-eligible','driver-auto-query-error',
         'driver-auto-hive-error','driver-auto-path-error','driver-auto-build-error',
         'driver-auto-import-error','driver-auto-whatif','driver-auto-invalid-sid',
-        'driver-auto-mount-failure','driver-auto-invalid-path')) {
+        'driver-auto-mount-failure','driver-auto-invalid-path',
+        'driver-auto-missing-key','driver-explicit-missing-key',
+        'driver-auto-missing-value','driver-explicit-missing-value','driver-auto-provider-denied')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -420,6 +436,9 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             'driver-auto-path-error' { 2 } 'driver-auto-invalid-path' { 2 }
             'driver-auto-invalid-sid' { 2 } 'driver-auto-import-error' { 2 }
             'driver-auto-mount-failure' { 4 } 'driver-auto-whatif' { 2 }
+            'driver-auto-missing-key' { 2 } 'driver-explicit-missing-key' { 2 }
+            'driver-auto-missing-value' { 2 } 'driver-explicit-missing-value' { 2 }
+            'driver-auto-provider-denied' { 2 }
             default { 0 }
         }
         if ($output -notmatch "PAYLOADS_REMAINING:$expectedPayloads") {
@@ -444,7 +463,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             throw "Owned hive was not unloaded:`n$output"
         }
         if ($policyCase) {
-            $warningOnly = $caseValue -in @('driver-auto-stale','driver-auto-missing-ntuser','driver-auto-whatif')
+            $warningOnly = $caseValue -in @('driver-auto-stale','driver-auto-missing-ntuser','driver-auto-whatif','driver-auto-missing-key','driver-auto-missing-value')
             $expectedExit = if ($warningOnly) { 0 } else { 1 }
             $failedCount = if ($warningOnly) { 0 } elseif ($caseValue -eq 'driver-auto-import-error') { 1 } else { 2 }
             $skips = if ($caseValue -eq 'driver-auto-no-eligible') { 2 } elseif ($warningOnly -or $caseValue -eq 'driver-auto-import-error') { 1 } else { 0 }
@@ -473,9 +492,10 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             $expectedDiagnostic = switch ($caseValue) {
                 'driver-auto-no-eligible' { 'No eligible targets.*leaving the per-system printer unchanged' }
                 'driver-auto-query-error' { 'Injected ProfileImagePath query failed' }
+                'driver-auto-provider-denied' { 'Injected profile provider access denied' }
                 'driver-auto-hive-error' { 'Injected hive access denied' }
                 'driver-auto-path-error' { 'Injected profile file access denied' }
-                'driver-auto-invalid-path' { 'fully qualified drive or UNC path' }
+                'driver-auto-invalid-path' { 'fully qualified local drive path' }
                 'driver-auto-invalid-sid' { "Ineligible target 'not-a-sid'" }
                 'driver-auto-build-error' { 'Private payload preparation failed' }
                 'driver-auto-import-error' { 'reg import failed' }
@@ -606,6 +626,14 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
 
 # Exercise real profile parsing/mount and registry error handling with host I/O mocked.
 & {
+    function Get-ItemProperty {
+        [CmdletBinding()]
+        param($LiteralPath)
+        if ($script:registryFailure) { throw [UnauthorizedAccessException]::new('ProfileImagePath query failed: Access is denied') }
+        if ($script:missingProfileKey) { throw [Management.Automation.ItemNotFoundException]::new('missing key') }
+        if ($script:missingProfileValue) { return [pscustomobject]@{} }
+        return [pscustomobject]@{ ProfileImagePath = $script:profileProbe }
+    }
     function Invoke-ConversionNative {
         param($Command, $Arguments)
         if ($script:registryFailure) {
@@ -613,18 +641,30 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         }
         return [pscustomobject]@{ ExitCode = 0; Output = @("ProfileImagePath    REG_EXPAND_SZ    $script:profileProbe") }
     }
-    foreach ($path in @('C:relative', '\relative', 'C:\Users\..\other', '\\server\share\..\other', '%UNRESOLVED_UPCONVERT_VAR%\user')) {
+    foreach ($path in @('C:relative', '\relative', 'C:\Users\..\other', '\\server\share\..\other', '%UNRESOLVED_UPCONVERT_VAR%\user',
+        'C:\Users/../other','C:\Users\%UNRESOLVED_UPCONVERT_VAR%\test','C:\Users\test:stream','\\server\share\test')) {
         $script:profileProbe = $path
         $rejected = $false
         try { Get-ProfileImagePath -UserSID 'S-1-5-21-1-2-3-1001' }
         catch { $rejected = $_.Exception.Message -match 'fully qualified' }
         if (-not $rejected) { throw "Ambiguous profile path accepted: $path" }
     }
-    foreach ($path in @('C:\Users\test', '\\server\share\test', '%SystemDrive%\Users\test')) {
+    foreach ($path in @('C:\Users\test', '%SystemDrive%\Users\test')) {
         $script:profileProbe = $path
         if ((Get-ProfileImagePath -UserSID 'S-1-5-21-1-2-3-1001') -cne
             [Environment]::ExpandEnvironmentVariables($path)) { throw "Profile path changed unexpectedly: $path" }
     }
+    $script:missingProfileKey = $true
+    if ($null -ne (Get-ProfileImagePath -UserSID 'test')) { throw 'Missing profile key was not absent' }
+    $script:missingProfileKey = $false
+    $script:missingProfileValue = $true
+    if ($null -ne (Get-ProfileImagePath -UserSID 'test')) { throw 'Missing profile value was not absent' }
+    $script:missingProfileValue = $false
+    $script:profileProbe = 42
+    $rejected = $false
+    try { Get-ProfileImagePath -UserSID 'test' }
+    catch { $rejected = $_.Exception.Message -match 'must be a string' }
+    if (-not $rejected) { throw 'Nonstring profile value accepted' }
     $script:registryFailure = $true
     foreach ($helper in @('Get-AllRealUserSIDs','Get-AllPerSystemShareIds','Get-ProfileImagePath')) {
         $rejected = $false
@@ -649,7 +689,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
     catch { $rejected = $_.Exception.Message -match 'denied hive' }
     if (-not $rejected) { throw 'Inaccessible hive treated as unloaded' }
 }
-$checks += 14
+$checks += 20
 & {
     Remove-Variable LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
     $null = Invoke-ConversionNative -Command $env:ComSpec -Arguments @('/d','/c','exit /b 0')
@@ -665,8 +705,13 @@ $checks += 14
     try { Invoke-ConversionNative -Command 'ThrowingNative' }
     catch { $rejected = $_.Exception.Message -match 'Injected invocation exception' }
     if (-not $rejected -or $global:LASTEXITCODE -ne 321) { throw 'Native invocation exception lost caller exit code' }
+    $LASTEXITCODE = 0
+    $native = Invoke-ConversionNative -Command $env:ComSpec -Arguments @('/d','/c','exit /b 7')
+    if ($native.ExitCode -ne 7 -or $LASTEXITCODE -ne 0 -or $global:LASTEXITCODE -ne 321) {
+        throw 'Caller-local LASTEXITCODE shadowed native exit status'
+    }
 }
-$checks += 3
+$checks += 4
 
 # ACL policy cases use synthetic Windows ACLs and metadata; no host ACL is changed.
 $script:testAcl = [Security.AccessControl.DirectorySecurity]::new()
@@ -678,20 +723,22 @@ $script:ancestorAcl.SetSecurityDescriptorSddlForm(
     'O:SYG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRFX;;;BU)(A;;0x4;;;BU)(A;OICIIO;GA;;;CO)')
 function Get-Acl {
     param([string]$LiteralPath)
-    if ($LiteralPath -eq $systemTemp) { return $script:testAcl }
+    if ($LiteralPath -eq $stagingRoot) { return $script:testAcl }
     return $script:ancestorAcl
 }
 function Get-Item {
     return [pscustomobject]@{ PSIsContainer = $true; Attributes = [IO.FileAttributes]::Directory }
 }
-$systemTemp = [IO.Path]::Combine(
-    [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows), 'SystemTemp')
-Assert-SystemTempParent -Path $systemTemp
+$stagingRoot = [IO.Path]::Combine(
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows), 'UPConvert')
+Assert-StagingAncestors -Path $stagingRoot
+$checks++
+Assert-StagingAncestors -Path ([IO.Directory]::GetParent($stagingRoot).FullName) -AllowLeafReadAccess
 $checks++
 foreach ($rights in @('0x2','0x10','0x100','0x40','0x10000','0x40000','0x80000','GA','GW')) {
     $script:ancestorAcl.SetSecurityDescriptorSddlForm("O:SYG:SYD:PAI(A;;$rights;;;BU)")
     $rejected = $false
-    try { Assert-SystemTempParent -Path $systemTemp }
+    try { Assert-StagingAncestors -Path $stagingRoot }
     catch { $rejected = $true }
     if (-not $rejected) { throw "Dangerous ancestor allow accepted: $rights" }
     $checks++
@@ -704,7 +751,7 @@ foreach ($sddl in @(
 )) {
     $script:ancestorAcl.SetSecurityDescriptorSddlForm($sddl)
     $rejected = $false
-    try { Assert-SystemTempParent -Path $systemTemp }
+    try { Assert-StagingAncestors -Path $stagingRoot }
     catch { $rejected = $true }
     if (-not $rejected) { throw "Unsafe ancestor security accepted: $sddl" }
     $checks++
@@ -716,16 +763,16 @@ function Get-Item {
     $script:visited += $LiteralPath
     return [pscustomobject]@{ PSIsContainer = $true; Attributes = [IO.FileAttributes]::Directory }
 }
-Assert-SystemTempParent -Path $systemTemp
+Assert-StagingAncestors -Path $stagingRoot
 $expected = @()
-$directory = [IO.DirectoryInfo]::new($systemTemp)
+$directory = [IO.DirectoryInfo]::new($stagingRoot)
 while ($directory) { $expected = @($directory.FullName) + $expected; $directory = $directory.Parent }
 if (($script:visited -join '|') -ne ($expected -join '|')) { throw 'Ancestor traversal was not top-down' }
 $checks++
 $script:ancestorAcl.SetSecurityDescriptorSddlForm('O:SYG:SYD:PAI(A;;0x40;;;BU)')
 $script:visited = @()
 $rejected = $false
-try { Assert-SystemTempParent -Path $systemTemp }
+try { Assert-StagingAncestors -Path $stagingRoot }
 catch { $rejected = $true }
 if (-not $rejected -or $script:visited.Count -ne 1) { throw 'Inspected child beneath an unsafe parent' }
 $checks++
@@ -739,9 +786,9 @@ foreach ($sddl in @(
     $script:testAcl = [Security.AccessControl.DirectorySecurity]::new()
     $script:testAcl.SetSecurityDescriptorSddlForm($sddl)
     $rejected = $false
-    try { Assert-SystemTempParent -Path $systemTemp }
+    try { Assert-StagingAncestors -Path $stagingRoot }
     catch { $rejected = $true }
-    if (-not $rejected) { throw "Unsupported SystemTemp ACL accepted: $sddl" }
+    if (-not $rejected) { throw "Unsupported UPConvert ACL accepted: $sddl" }
     $checks++
 }
 $script:testAcl.SetSecurityDescriptorSddlForm('O:SYG:SYD:PAI(A;;FA;;;SY)')
@@ -750,7 +797,7 @@ foreach ($sddl in @(
     'O:SYG:SYD:PAI(A;;FA;;;SY)(A;OICIIO;GA;;;BU)'
 )) {
     $script:testAcl.SetSecurityDescriptorSddlForm($sddl)
-    Assert-SystemTempParent -Path $systemTemp
+    Assert-StagingAncestors -Path $stagingRoot
     $checks++
 }
 # Observed Entra-device descriptor: applicable primary-user FullControl is a
@@ -758,7 +805,7 @@ foreach ($sddl in @(
 $script:testAcl.SetSecurityDescriptorSddlForm(
     'O:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;S-1-12-1-111-222-333-444)')
 $rejected = $false
-try { Assert-SystemTempParent -Path $systemTemp }
+try { Assert-StagingAncestors -Path $stagingRoot }
 catch {
     $rejected = $_.Exception.Message -match 'Ask your administrator.*no ACL was changed'
 }
@@ -769,50 +816,96 @@ function Get-Item {
     return [pscustomobject]@{ PSIsContainer = $true; Attributes = [IO.FileAttributes]::ReparsePoint }
 }
 $rejected = $false
-try { Assert-SystemTempParent -Path $systemTemp }
+try { Assert-StagingAncestors -Path $stagingRoot }
 catch { $rejected = $true }
-if (-not $rejected) { throw 'Reparse SystemTemp accepted' }
+if (-not $rejected) { throw 'Reparse UPConvert accepted' }
 $checks++
 function Get-Item {
     return [pscustomobject]@{ PSIsContainer = $false; Attributes = [IO.FileAttributes]::Normal }
 }
 $rejected = $false
-try { Assert-SystemTempParent -Path $systemTemp }
+try { Assert-StagingAncestors -Path $stagingRoot }
 catch { $rejected = $true }
-if (-not $rejected) { throw 'Nondirectory SystemTemp accepted' }
+if (-not $rejected) { throw 'Nondirectory UPConvert accepted' }
 $checks++
-function Get-Item { Write-Error 'SystemTemp does not exist' }
+function Get-Item { Write-Error 'UPConvert does not exist' }
 $rejected = $false
-try { Assert-SystemTempParent -Path $systemTemp }
+try { Assert-StagingAncestors -Path $stagingRoot }
 catch { $rejected = $true }
-if (-not $rejected) { throw 'Missing SystemTemp accepted' }
+if (-not $rejected) { throw 'Missing UPConvert accepted' }
 $checks++
 
 # Exercise the real managed directory factory on an isolated parent. Substitute
 # only its parent and owner (the available token is not SYSTEM), not ACL creation.
-$factory = $ast.FindAll({
+$factory = ($ast.FindAll({
     param($node)
     $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-    $node.Name -eq 'New-PrivateStagingDirectory'
-}, $false).Extent.Text
+    $node.Name -in @('New-PrivateStagingDirectory','Initialize-ProtectedStagingDirectory','Assert-ProtectedStagingDirectory')
+}, $false) | ForEach-Object { $_.Extent.Text }) -join "`r`n"
 $factoryFixture = Join-Path ([IO.Path]::GetTempPath()) "UPConvert-factory-$([Guid]::NewGuid().ToString('N'))"
 $null = [IO.Directory]::CreateDirectory($factoryFixture)
 $factoryMarker = Join-Path $factoryFixture '.upconvert-test'
 [IO.File]::WriteAllText($factoryMarker, 'UPConvert factory fixture')
-function Assert-SystemTempParent {
-    param([string]$Path)
-    if ($Path -ne $factoryFixture) { throw 'Factory escaped isolated parent' }
+function Assert-StagingAncestors {
+    param([string]$Path, [switch]$AllowLeafReadAccess)
+    if ($AllowLeafReadAccess) {
+        if ($Path -ne [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)) { throw 'Unexpected Windows ancestor' }
+    } elseif ($Path -ne $factoryFixture) { throw 'Factory escaped isolated parent' }
 }
 try {
+    & {
+        . ([scriptblock]::Create($factory.Replace(
+            '$windows = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)',
+            '$windows = $factoryFixture')))
+        $script:factorySteps = @()
+        function Assert-StagingAncestors {
+            param($Path, [switch]$AllowLeafReadAccess)
+            $expected = if ($AllowLeafReadAccess) { $factoryFixture } else { Join-Path $factoryFixture 'UPConvert' }
+            if ($Path -cne $expected) { throw "Factory inspected unexpected ancestor: $Path" }
+            $script:factorySteps += 'validate'
+        }
+        function Initialize-ProtectedStagingDirectory {
+            param($Path, $Security)
+            $script:factorySteps += 'initialize'
+            $root = Join-Path $factoryFixture 'UPConvert'
+            $expectedOwner = if ($Path -eq $root) { 'S-1-5-32-544' } else { 'S-1-5-18' }
+            if ($Security.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $expectedOwner -or
+                -not $Security.AreAccessRulesProtected -or
+                ($Path -ne $root -and [IO.Path]::GetDirectoryName($Path) -ne $root)) {
+                throw 'Factory did not provision dedicated root/run security'
+            }
+        }
+        $run = New-PrivateStagingDirectory
+        if (($script:factorySteps -join ',') -ne 'validate,initialize,validate,initialize' -or
+            [IO.Path]::GetDirectoryName($run) -cne (Join-Path $factoryFixture 'UPConvert')) {
+            throw 'Factory did not validate Windows before provisioning/validating its dedicated root'
+        }
+    }
+    $checks++
     $testFactory = $factory.Replace(
-        '$parent = [IO.Path]::Combine($windows, ''SystemTemp'')', '$parent = $factoryFixture').Replace(
+        '$parent = [IO.Path]::Combine($windows, ''UPConvert'')', '$parent = $factoryFixture').Replace(
+        'Initialize-ProtectedStagingDirectory -Path $parent -Security $rootSecurity', '').Replace(
         '$owner = [Security.Principal.SecurityIdentifier]::new(''S-1-5-18'')',
         '$owner = [Security.Principal.WindowsIdentity]::GetCurrent().User')
     . ([scriptblock]::Create($testFactory))
+    $rootProbe = Join-Path $factoryFixture 'protected-root'
+    $rootProbeSecurity = [Security.AccessControl.DirectorySecurity]::new()
+    $rootProbeSecurity.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+    $rootProbeSecurity.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+    Initialize-ProtectedStagingDirectory -Path $rootProbe -Security $rootProbeSecurity
+    Initialize-ProtectedStagingDirectory -Path $rootProbe -Security $rootProbeSecurity
+    Assert-ProtectedStagingDirectory -Path $rootProbe -Security $rootProbeSecurity
+    $checks++
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $isAdmin = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)
     if ($isAdmin) {
+        $adminRoot = Join-Path $factoryFixture 'admin-owned-root'
+        $adminSecurity = [Security.AccessControl.DirectorySecurity]::new()
+        $adminSecurity.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+        Initialize-ProtectedStagingDirectory -Path $adminRoot -Security $adminSecurity
+        Initialize-ProtectedStagingDirectory -Path $adminRoot -Security $adminSecurity
+        Assert-ProtectedStagingDirectory -Path $adminRoot -Security $adminSecurity
         $whatIfPath = New-PrivateStagingDirectory -WhatIfMode
         $whatIfAcl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $whatIfPath
         if ($whatIfAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $identity.User.Value) {
@@ -825,6 +918,36 @@ try {
         if (-not $rejected) { throw 'WhatIf factory accepted a nonelevated caller' }
     }
     $checks++
+    $unsafeRoot = Join-Path $factoryFixture 'unsafe-root'
+    $null = [IO.Directory]::CreateDirectory($unsafeRoot)
+    [IO.File]::WriteAllText((Join-Path $unsafeRoot 'KEEP'), 'unchanged')
+    $beforeAcl = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $unsafeRoot).Sddl
+    $rejected = $false
+    try { Initialize-ProtectedStagingDirectory -Path $unsafeRoot -Security $rootProbeSecurity }
+    catch { $rejected = $_.Exception.Message -match 'owner or protected DACL differs' }
+    if (-not $rejected -or (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $unsafeRoot).Sddl -ne $beforeAcl -or
+        [IO.File]::ReadAllText((Join-Path $unsafeRoot 'KEEP')) -ne 'unchanged') {
+        throw 'Unsafe existing staging root was reused, repaired or removed'
+    }
+    [IO.File]::Delete((Join-Path $unsafeRoot 'KEEP'))
+    $checks++
+    $fileRoot = Join-Path $factoryFixture 'file-root'
+    [IO.File]::WriteAllText($fileRoot, 'unchanged')
+    $rejected = $false
+    try { Initialize-ProtectedStagingDirectory -Path $fileRoot -Security $rootProbeSecurity }
+    catch { $rejected = $_.Exception.Message -match 'ordinary non-reparse' }
+    if (-not $rejected -or [IO.File]::ReadAllText($fileRoot) -ne 'unchanged') { throw 'Existing staging-root file was consumed or modified' }
+    [IO.File]::Delete($fileRoot)
+    & {
+        . ([scriptblock]::Create($testFactory.Replace(
+            '$item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $Path -Force -ErrorAction Stop',
+            '$item = [pscustomobject]@{ PSIsContainer = $true; Attributes = [IO.FileAttributes]::ReparsePoint }')))
+        $rejected = $false
+        try { Assert-ProtectedStagingDirectory -Path $rootProbe -Security $rootProbeSecurity }
+        catch { $rejected = $_.Exception.Message -match 'ordinary non-reparse' }
+        if (-not $rejected) { throw 'Redirected staging root accepted' }
+    }
+    $checks += 2
     $created = @(New-PrivateStagingDirectory; New-PrivateStagingDirectory)
     if ($created.Count -ne 2 -or $created[0] -eq $created[1]) { throw 'Factory reused a directory' }
     foreach ($path in $created) {
@@ -876,7 +999,7 @@ try {
         $injectedAcl = [Security.AccessControl.DirectorySecurity]::new()
         $injectedAcl.SetSecurityDescriptorSddlForm($sddl)
         $postconditionFactory = $testFactory.Replace(
-            '$actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $path -ErrorAction Stop',
+            '$actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path -ErrorAction Stop',
             '$actual = $injectedAcl')
         . ([scriptblock]::Create($postconditionFactory))
         $rejected = $false
@@ -891,7 +1014,7 @@ try {
         foreach ($child in [IO.Directory]::GetDirectories($factoryFixture)) {
             try {
                 # Only this marked fixture's ACL is changed for owner cleanup;
-                # production/SystemTemp ACLs are never modified.
+                # production/UPConvert ACLs are never modified.
                 $info = [IO.DirectoryInfo]::new($child)
                 if ($PSVersionTable.PSEdition -eq 'Desktop') {
                     $cleanupAcl = $info.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)

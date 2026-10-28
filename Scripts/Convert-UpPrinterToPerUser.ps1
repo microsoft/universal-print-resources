@@ -36,21 +36,20 @@ administrator. This is not read-only, and temporary backups remain afterward.
 .\Convert-UpPrinterToPerUser.ps1 -AllUPPrinters -TenantId '<tenant-guid>' -WhatIfMode
 .NOTES
 Files use a private SYSTEM/Administrators-only directory per printer under
-Windows SystemTemp. BackupDir is no longer supported. Missing or unsupported
-staging permissions stop preparation without changing permissions or falling
-back to another location; ask your administrator to review the reported error.
-Retained files are sensitive temporary backups, not durable archives: OS cleanup
-may remove them. Arrange secure archival storage if needed, and remove the
-printed staging directories when no longer required.
-
-Some Entra-joined devices have an applicable named-user FullControl grant on
-SystemTemp. Such devices are unsupported by this staging policy, even when that
-user is an administrator. Do not remove an OS/management-required grant or use a
-different TEMP directory to bypass this check. Have the device administrator
-inspect the reported ACL and its provisioning policy; only an unintended grant
-may be corrected under the organization's approved procedure. If the grant must
-remain, defer this conversion and use your supported printer deployment process.
-Detection remains available. No custom staging-path workaround is supported.
+Windows\UPConvert (Windows location obtained from the OS, not the environment).
+The dedicated root is created with a protected DACL and Administrators ownership;
+an existing root must match that security exactly and cannot be a reparse point.
+Run directories use SYSTEM ownership, or elevated-caller ownership for WhatIf.
+Root/Windows ancestry is validated before root creation or reuse. Unsafe existing
+directories are rejected, not repaired or deleted. SystemTemp permissions are
+not used or changed, including named-user grants on some Entra-joined devices.
+BackupDir is no longer supported and there is no alternate-path fallback.
+Ask your administrator to review any rejected ancestor/root permissions.
+Retained files are sensitive backups, not managed archives. Arrange secure
+retention and remove printed run directories when no longer required. The empty
+protected UPConvert root is kept for reuse; the script never removes it.
+Profile hive loading supports local fully qualified drive paths only, not UNC
+or device paths, to avoid SYSTEM authentication to remote profile hosts.
 
 A nonzero pairtool result is reported as incomplete, but imports still continue
 as in the original script; both associations may remain. Do not blindly retry a
@@ -191,8 +190,8 @@ if (-not $WhatIfMode) {
 
 # --- Helpers (hive load/unload, copied/adapted from upcleanup.ps1) ------------
 
-function Assert-SystemTempParent {
-    param ([string]$Path)
+function Assert-StagingAncestors {
+    param ([string]$Path, [switch]$AllowLeafReadAccess)
 
     # Validate each parent before following its child. Once checked, low-privileged
     # actors cannot replace it or change its DACL/reparse metadata.
@@ -230,7 +229,7 @@ function Assert-SystemTempParent {
             if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
                 $ace.SecurityIdentifier.Value -notin $trusted -and
                 -not ([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -and
-                ($ancestor -eq $Path -or ($ace.AccessMask -band $dangerous))) {
+                (($ancestor -eq $Path -and -not $AllowLeafReadAccess) -or ($ace.AccessMask -band $dangerous))) {
                 throw "Unsupported applicable allow for $($ace.SecurityIdentifier.Value) on staging ancestor '$ancestor'. Ask your administrator to review this ACL against the supported SYSTEM/Administrators/TrustedInstaller policy; no ACL was changed."
             }
         }
@@ -239,20 +238,6 @@ function Assert-SystemTempParent {
 
 function New-PrivateStagingDirectory {
     param ([switch]$WhatIfMode)
-    # Use the OS Windows location, not caller-controlled temp environment overrides.
-    $windows = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
-    if (-not $windows) { throw 'Cannot locate the Windows directory for fixed SystemTemp staging.' }
-    $parent = [IO.Path]::Combine($windows, 'SystemTemp')
-    Assert-SystemTempParent -Path $parent
-    # Never reuse an existing run directory, even if its random name collides.
-    $path = [IO.Path]::Combine($parent, "UPConvert-$([Guid]::NewGuid().ToString('N'))")
-    if ([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) {
-        throw "Staging directory collision: $path"
-    }
-    # Build a non-inheriting SYSTEM/Admins-only ACL before the directory exists;
-    # child files inherit this protection throughout export, reread, and import.
-    $security = [Security.AccessControl.DirectorySecurity]::new()
-    $security.SetAccessRuleProtection($true, $false)
     $owner = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     if ($WhatIfMode) {
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -262,6 +247,24 @@ function New-PrivateStagingDirectory {
         }
         $owner = $identity.User
     }
+    # Use the OS Windows location, not caller-controlled temp environment overrides.
+    $windows = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+    if (-not $windows) { throw 'Cannot locate the Windows directory for fixed private staging.' }
+    Assert-StagingAncestors -Path $windows -AllowLeafReadAccess
+    $parent = [IO.Path]::Combine($windows, 'UPConvert')
+    $rootSecurity = [Security.AccessControl.DirectorySecurity]::new()
+    $rootSecurity.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+    Initialize-ProtectedStagingDirectory -Path $parent -Security $rootSecurity
+    Assert-StagingAncestors -Path $parent
+    # Never reuse an existing run directory, even if its random name collides.
+    $path = [IO.Path]::Combine($parent, "UPConvert-$([Guid]::NewGuid().ToString('N'))")
+    if ([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) {
+        throw "Staging directory collision: $path"
+    }
+    # Build a non-inheriting SYSTEM/Admins-only ACL before the directory exists;
+    # child files inherit this protection throughout export, reread, and import.
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
     $security.SetOwner($owner)
     foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
         $rule = [Security.AccessControl.FileSystemAccessRule]::new(
@@ -272,6 +275,24 @@ function New-PrivateStagingDirectory {
             [Security.AccessControl.AccessControlType]::Allow)
         $security.AddAccessRule($rule)
     }
+    Initialize-ProtectedStagingDirectory -Path $path -Security $security
+    return $path
+}
+
+function Initialize-ProtectedStagingDirectory {
+    param ([string]$Path, [Security.AccessControl.DirectorySecurity]$Security)
+
+    # Reject redirected/existing unsafe directories before asking CreateDirectory
+    # to reuse them. Never repair permissions or remove an unexpected directory.
+    try {
+        $existing = Microsoft.PowerShell.Management\Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch [Management.Automation.ItemNotFoundException] {
+        $existing = $null
+    }
+    if ($null -ne $existing) {
+        Assert-ProtectedStagingDirectory -Path $Path -Security $Security
+        return
+    }
     # Both APIs supply the DACL to directory creation, not after creation.
     # The checked ancestry prevents low-privileged replacement without handle pinning.
     if ($PSVersionTable.PSEdition -eq 'Desktop') {
@@ -281,16 +302,22 @@ function New-PrivateStagingDirectory {
     }
     # Managed creation can return an existing directory. Never consume a child
     # whose actual owner/DACL differs, even if a trusted actor raced creation.
-    $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $path -Force -ErrorAction Stop
-    $actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $path -ErrorAction Stop
+    Assert-ProtectedStagingDirectory -Path $Path -Security $Security
+}
+
+function Assert-ProtectedStagingDirectory {
+    param ([string]$Path, [Security.AccessControl.DirectorySecurity]$Security)
+    $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Staging directory must be an ordinary non-reparse directory: $Path"
+    }
+    $actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path -ErrorAction Stop
     $access = [Security.AccessControl.AccessControlSections]::Access
-    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
-        $actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner.Value -or
+    if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $Security.GetOwner([Security.Principal.SecurityIdentifier]).Value -or
         -not $actual.AreAccessRulesProtected -or
         $actual.GetSecurityDescriptorSddlForm($access) -ne $security.GetSecurityDescriptorSddlForm($access)) {
         throw "Staging directory owner or protected DACL differs from the requested security: $path"
     }
-    return $path
 }
 
 function Invoke-ConversionNative {
@@ -305,8 +332,8 @@ function Invoke-ConversionNative {
     try {
         $global:LASTEXITCODE = $null
         $output = @(& $Command @Arguments 2>&1)
-        if ($null -eq $LASTEXITCODE) { throw "Native command did not return an exit code: $Command" }
-        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = @($output | ForEach-Object {
+        if ($null -eq $global:LASTEXITCODE) { throw "Native command did not return an exit code: $Command" }
+        return [pscustomobject]@{ ExitCode = $global:LASTEXITCODE; Output = @($output | ForEach-Object {
             if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message }
             else { $_.ToString() }
         }) }
@@ -381,22 +408,21 @@ function Get-AllPerSystemShareIds {
 
 function Get-ProfileImagePath {
     param ([string]$UserSID)
-    $query = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('query', "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$UserSID", '/v', 'ProfileImagePath')
-    if ($query.ExitCode -ne 0) { throw "ProfileImagePath query failed for $UserSID (exit $($query.ExitCode)): $($query.Output -join ' ')" }
-    $out = $query.Output
-    if ($out) {
-        $m = [regex]::Match(($out -join "`n"), 'ProfileImagePath\s+REG_EXPAND_SZ\s+(.+)')
-        if ($m.Success) {
-            $profilePath = [Environment]::ExpandEnvironmentVariables($m.Groups[1].Value.Trim())
-            # A rooted drive-relative path (C:foo or \foo) is not absolute.
-            if ($profilePath -notmatch '^(?:[a-zA-Z]:\\|\\\\[^\\?\.][^\\]*\\[^\\]+(?:\\|$))' -or
-                $profilePath -match '(?:^|\\)\.\.?(?:\\|$)') {
-                throw "ProfileImagePath must be a fully qualified drive or UNC path without dot segments: $profilePath"
-            }
-            return $profilePath
-        }
+    try {
+        $values = Get-ItemProperty -LiteralPath "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$UserSID" -ErrorAction Stop
+    } catch [Management.Automation.ItemNotFoundException] {
+        return $null
     }
-    return $null
+    $value = $values.PSObject.Properties['ProfileImagePath']
+    if ($null -eq $value -or $null -eq $value.Value -or $value.Value -eq '') { return $null }
+    if ($value.Value -isnot [string]) { throw "ProfileImagePath must be a string for $UserSID." }
+    $profilePath = [Environment]::ExpandEnvironmentVariables($value.Value)
+    if ($profilePath -notmatch '^[a-zA-Z]:\\' -or $profilePath -match '[/%]' -or
+        $profilePath.Substring(2).Contains(':') -or
+        $profilePath -match '(?:^|\\)\.\.?(?:\\|$)') {
+        throw "ProfileImagePath must be a fully qualified local drive path without dot segments, unresolved variables or alternate streams: $profilePath"
+    }
+    return $profilePath
 }
 
 function Test-HiveLoaded {
@@ -1008,7 +1034,7 @@ try {
 Write-Host "=== Convert per-system UP printer(s) to per-user ===" -ForegroundColor Cyan
 Write-Host "  Mode           : $($PSCmdlet.ParameterSetName)$(if ($WhatIfMode) { ' (WHATIF)' } else { '' })"
 Write-Host "  TenantId param : $TenantId"
-Write-Host "  Backups        : private per-printer Windows system directory"
+Write-Host "  Backups        : private per-printer Windows\UPConvert directory"
 Write-Host "  ShareId(s)     : $($shareIdsToConvert.Count) printer(s)"
 foreach ($s in $shareIdsToConvert) { Write-Host "    $s" -ForegroundColor DarkGray }
 Write-Host ""
