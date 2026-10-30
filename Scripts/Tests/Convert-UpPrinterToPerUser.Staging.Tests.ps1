@@ -907,12 +907,18 @@ $checks += 26
         $script:redirectedProfileEntry = $entry
         $rejected = $false
         try { Assert-LocalProfileHivePath -Path $hivePath }
-        catch { $rejected = $_.Exception.Message -match 'cannot contain a reparse point' }
+        catch {
+            $rejected = $_.Exception -is [NotSupportedException] -and
+                $_.Exception.Message -match 'cannot contain a reparse point'
+        }
         if (-not $rejected) { throw "Redirected profile entry accepted: $entry" }
     }
     $rejected = $false
     try { Assert-LocalProfileHivePath -Path '\\localhost\share\NTUSER.DAT' }
-    catch { $rejected = $_.Exception.Message -match 'fixed local drive' }
+    catch {
+        $rejected = $_.Exception -is [NotSupportedException] -and
+            $_.Exception.Message -match 'fixed local drive'
+    }
     if (-not $rejected) { throw 'Network profile drive accepted' }
 }
 $checks += 5

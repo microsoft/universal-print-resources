@@ -16,6 +16,9 @@ Missing profile paths or NTUSER.DAT files are warning-only skips for automatical
 discovered targets, as are unsupported hive locations (non-fixed drives or
 reparse paths); these count as incomplete for explicit UserSIDs. Query/access,
 invalid target/path, staging and migration errors remain failures in either mode.
+If eligible users are migrated and the per-system printer is disassociated,
+users skipped for unsupported hive locations lose that printer's per-system
+access and receive no per-user replacement, even when the run exits 0.
 Summary install counts exclude warning-only skips and report them separately.
 Exit 1 therefore does not imply nothing changed or that retrying is safe.
 If none are eligible, the per-system printer stays unchanged. Failures after
@@ -69,7 +72,12 @@ fixed drive and reject reparse points along the hive path. These checks are not
 compatible with junctions or volume mount points anywhere along the path,
 including C:\Users. Unsupported locations are skipped with a warning for
 automatically discovered targets, but fail explicit UserSIDs. Inspection/access
-errors remain failures in both modes. These checks are not
+errors remain failures in both modes. Skipping an unsupported profile does not
+block migration for eligible users: disassociation removes the shared printer
+for skipped users too, without installing their per-user replacement. Rerunning
+this script cannot recover those users from a removed per-system DAF entry;
+use supported printer deployment tools to provide their printer separately.
+WhatIf does not disassociate the printer. These checks are not
 atomic: a user-writable profile can change between inspection and reg load.
 Run migration while target users and other profile writers are quiescent; this
 is not a race-resistant hive-loading mechanism for actively adversarial profiles.
