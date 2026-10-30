@@ -4,7 +4,8 @@ Detect or migrate legacy per-system Universal Print printers to per-user install
 .DESCRIPTION
 Detection requires no elevation. Conversion requires NT AUTHORITY\SYSTEM on
 Windows PowerShell 5.1 or PowerShell 7. On 64-bit Windows, both modes require
-64-bit PowerShell to avoid filesystem and registry redirection.
+64-bit PowerShell to avoid filesystem and registry redirection; an unsupported
+32-bit host exits 2 before detection or conversion.
 To open a SYSTEM prompt, run
 psexec.exe -s -i powershell.exe from an administrator prompt using your approved
 Sysinternals PsExec installation (or substitute pwsh.exe for PowerShell 7).
@@ -23,7 +24,8 @@ Review the printed outcomes and backup paths. Conversion exits 1 on reported
 failures, 0 otherwise. DeviceAssociationService and Spooler restart unless skipped,
 but only after a disassociation or import attempt, including failed attempts.
 .PARAMETER Detect
-Only detect per-system UP printers. Exit 0 = found; exit 1 = none found.
+Only detect per-system UP printers. Exit 0 = found; exit 1 = none found;
+exit 2 = unsupported 32-bit host on 64-bit Windows.
 .PARAMETER UserSIDs
 Target these user SIDs; omit to target all real user profiles.
 SIDs are canonicalized in first-seen order. Each duplicate is logged and skipped;
@@ -121,7 +123,7 @@ param (
 
 if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
     Write-Host 'ERROR: Run this script in 64-bit PowerShell on 64-bit Windows to avoid filesystem and registry redirection.' -ForegroundColor Red
-    exit 1
+    exit 2
 }
 
 # --- Detect mode (no elevation required) --------------------------------------
@@ -371,7 +373,10 @@ function Assert-ProtectedStagingDirectory {
         -not $actual.AreAccessRulesProtected -or -not $actual.AreAccessRulesCanonical -or
         $null -eq $actualDescriptor.DiscretionaryAcl -or
         ($actualAces -join ',') -cne ($expectedAces -join ',')) {
-        throw "Staging directory owner or protected DACL differs from the requested security: $path"
+        $diagnosticSections = [Security.AccessControl.AccessControlSections]'Owner, Access'
+        $actualSddl = $actual.GetSecurityDescriptorSddlForm($diagnosticSections)
+        $expectedSddl = $Security.GetSecurityDescriptorSddlForm($diagnosticSections)
+        throw "Staging directory owner or protected DACL differs from the requested security: $path. Actual owner/DACL: $actualSddl. Expected owner/DACL: $expectedSddl. Actual protected=$($actual.AreAccessRulesProtected), canonical=$($actual.AreAccessRulesCanonical). See .NOTES 'To reset an altered root'; no permissions were changed."
     }
 }
 
@@ -1252,6 +1257,7 @@ foreach ($r in $failed) {
 }
 Write-Host "Done."
 if ($failed.Count -gt 0 -or $restartFailed) { exit 1 }
+exit 0
 # SIG # Begin signature block
 # MIIoKwYJKoZIhvcNAQcCoIIoHDCCKBgCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG

@@ -35,6 +35,24 @@ if ($Case) {
     [IO.File]::WriteAllText($marker, 'UPConvert isolated test fixture')
     [IO.File]::WriteAllText((Join-Path $fixture 'NTUSER.DAT'), 'isolated non-hive fixture')
     try {
+        if ($Case -eq 'inprocess-success-exit') {
+            # Use the production exit tail in a script invocation, not -File:
+            # a process exit alone would mask stale caller LASTEXITCODE.
+            $statements = @($ast.EndBlock.Statements)
+            $tail = ($statements[-2..-1] | ForEach-Object { $_.Extent.Text }) -join "`r`n"
+            if ($tail -notmatch '\$failed.Count' -or $tail -notmatch '\$restartFailed') {
+                throw 'Could not identify production exit tail'
+            }
+            $driverPath = Join-Path $fixture 'exit-tail.ps1'
+            [IO.File]::WriteAllText($driverPath, $tail)
+            $failed = @()
+            $restartFailed = $false
+            $global:LASTEXITCODE = 71
+            & $driverPath
+            if ($LASTEXITCODE -ne 0) { throw "Successful driver retained LASTEXITCODE=$LASTEXITCODE" }
+            Write-Host 'SUCCESS_EXITCODE:0'
+            exit 0
+        }
         if ($Case -eq 'early-architecture') {
             $guard = $ast.EndBlock.Statements[0]
             if ($guard -isnot [Management.Automation.Language.IfStatementAst] -or
@@ -522,7 +540,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-staging-only-failure','driver-query-only-failure','driver-export-only-failure','driver-empty-sid',
         'driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart',
         'driver-auto-reparse','driver-explicit-reparse','driver-auto-nonfixed','driver-explicit-nonfixed',
-        'driver-auto-inspection-error','driver-explicit-inspection-error','early-architecture')) {
+        'driver-auto-inspection-error','driver-explicit-inspection-error','early-architecture','inprocess-success-exit')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
         $exitCode = $LASTEXITCODE
@@ -585,8 +603,12 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             $output -match 'HIVE_MOUNTED\s+HIVE_CHECKED') {
             throw "Successfully mounted hive was unnecessarily reopened:`n$output"
         }
-        if ($caseValue -eq 'early-architecture') {
-            if ($exitCode -ne 1 -or $output -notmatch 'ERROR: Run this script in 64-bit PowerShell' -or
+        if ($caseValue -eq 'inprocess-success-exit') {
+            if ($exitCode -ne 0 -or $output -notmatch 'SUCCESS_EXITCODE:0') {
+                throw "In-process success exit code was not verified:`n$output"
+            }
+        } elseif ($caseValue -eq 'early-architecture') {
+            if ($exitCode -ne 2 -or $output -notmatch 'ERROR: Run this script in 64-bit PowerShell' -or
                 $output -match 'QUERIES:\d|EXPORTED|DISASSOCIATED|IMPORTED') {
                 throw "Architecture entry-point diagnostic failed:`n$output"
             }
@@ -1138,7 +1160,14 @@ try {
     $beforeAcl = (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $unsafeRoot).Sddl
     $rejected = $false
     try { Initialize-ProtectedStagingDirectory -Path $unsafeRoot -Security $rootProbeSecurity }
-    catch { $rejected = $_.Exception.Message -match 'owner or protected DACL differs' }
+    catch {
+        $message = $_.Exception.Message
+        $sections = [Security.AccessControl.AccessControlSections]'Owner, Access'
+        $rejected = $message.Contains('owner or protected DACL differs') -and
+            $message.Contains("Actual owner/DACL: $((Microsoft.PowerShell.Security\Get-Acl -LiteralPath $unsafeRoot).GetSecurityDescriptorSddlForm($sections))") -and
+            $message.Contains("Expected owner/DACL: $($rootProbeSecurity.GetSecurityDescriptorSddlForm($sections))") -and
+            $message.Contains("See .NOTES 'To reset an altered root'; no permissions were changed.")
+    }
     if (-not $rejected -or (Microsoft.PowerShell.Security\Get-Acl -LiteralPath $unsafeRoot).Sddl -ne $beforeAcl -or
         [IO.File]::ReadAllText((Join-Path $unsafeRoot 'KEEP')) -ne 'unchanged') {
         throw 'Unsafe existing staging root was reused, repaired or removed'
