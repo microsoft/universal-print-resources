@@ -17,6 +17,10 @@ The Universal Print team does not make any commitments to the frequency of updat
 | [BadgeReleaseDemo](./BadgeReleaseDemo) | Interactive .NET console app demonstrating the Universal Print badge release lifecycle (printer registration, secure-release sharing, badge management, and IPP job fetch). |
 | [Scripts](./Scripts) | PowerShell scripts and the Universal Print connector sample. |
 | [PrintTrace.cmd](./PrintTrace.cmd) | Batch script for collecting Universal Print client diagnostic traces. |
+| [Test-MissingUPPrinters.ps1](./Test-MissingUPPrinters.ps1) | Detection script for [Intune Remediations](https://learn.microsoft.com/intune/device-management/tools/deploy-remediations) that looks for Universal Print printers assigned by Intune policies but missing on the Windows device. |
+| [Repair-MissingUPPrinters.ps1](./Repair-MissingUPPrinters.ps1) | Repair script for [Intune Remediations](https://learn.microsoft.com/intune/device-management/tools/deploy-remediations) that installs the missing Universal Print printer. |
+
+When you deploy `Test-MissingUPPrinters.ps1` and `Repair-MissingUPPrinters.ps1` as an Intune Remediations package, set **Run this script using the logged-on credentials** to Yes and **Run script in 64-bit PowerShell** to Yes.
 
 ### IMPORTANT DISCLAIMER
 
