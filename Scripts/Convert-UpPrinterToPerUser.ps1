@@ -1,19 +1,96 @@
-# Convert per-system Universal Print printer(s) to per-user installs for all real users,
-# or detect per-system UP printers (no elevation required).
-#
-# Modes:
-#   -Detect          Checks for legacy per-system UP printers (no elevation, no SYSTEM, no ShareId/TenantId).
-#                    Exit 0 = found, Exit 1 = none found.
-#
-#   -AllUPPrinters   Converts every per-system UP printer found in the DAF store. Run as SYSTEM.
-#
-#   (default)        Converts a single per-system printer (-ShareId) to per-user installs. Run as SYSTEM.
-#     1. Backs up the per-system DAF entry for MCP#<ShareId> to a .reg file.
-#     2. Reads the per-system properties (capabilities, tenant, audience, URL, display name, etc.).
-#     3. Disassociates the per-system AEP via pairtool (running as SYSTEM).
-#     4. For each real user on the box (loading logged-off hives as needed), writes per-user DAF
-#        entries with a freshly-generated instance GUID for each install.
-#     5. Restarts DeviceAssociationService and Spooler (once, after all printers are processed).
+<#
+.SYNOPSIS
+Detect or migrate legacy per-system Universal Print printers to per-user installs.
+.DESCRIPTION
+Detection requires no elevation. Conversion requires NT AUTHORITY\SYSTEM on
+Windows PowerShell 5.1 or PowerShell 7. On 64-bit Windows, both modes require
+64-bit PowerShell to avoid filesystem and registry redirection; an unsupported
+32-bit host exits 2 before detection or conversion.
+To open a SYSTEM prompt, run
+psexec.exe -s -i powershell.exe from an administrator prompt using your approved
+Sysinternals PsExec installation (or substitute pwsh.exe for PowerShell 7).
+
+Use ShareId for one printer or AllUPPrinters for all, with your TenantId.
+Conversion skips invalid or unavailable users and continues eligible users.
+Missing profile paths or NTUSER.DAT files are warning-only skips for automatically
+discovered targets, as are unsupported hive locations (non-fixed drives or
+reparse paths); these count as incomplete for explicit UserSIDs. Query/access,
+invalid target/path, staging and migration errors remain failures in either mode.
+If eligible users are migrated and the per-system printer is disassociated,
+users skipped for unsupported hive locations lose that printer's per-system
+access and receive no per-user replacement, even when the run exits 0.
+Summary install counts exclude warning-only skips and report them separately.
+Exit 1 therefore does not imply nothing changed or that retrying is safe.
+If none are eligible, the per-system printer stays unchanged. Failures after
+changes begin can leave a partial migration; there is no automatic rollback.
+Review the printed outcomes and backup paths. Conversion exits 1 on reported
+failures, 0 otherwise. DeviceAssociationService and Spooler restart unless skipped,
+but only after a disassociation or import attempt, including failed attempts.
+.PARAMETER Detect
+Only detect per-system UP printers. Exit 0 = found; exit 1 = none found;
+exit 2 = unsupported 32-bit host on 64-bit Windows.
+.PARAMETER UserSIDs
+Target these user SIDs; omit to target all real user profiles.
+SIDs are canonicalized in first-seen order. Each duplicate is logged and skipped;
+summary counts use unique targets, not duplicate arguments.
+.PARAMETER WhatIfMode
+Export backups, prepare files, and check/load/unload hives, but do not
+disassociate, import, or restart services. Requires SYSTEM or an elevated
+administrator. This is not read-only, and temporary backups remain afterward.
+.EXAMPLE
+.\Convert-UpPrinterToPerUser.ps1 -Detect
+.EXAMPLE
+.\Convert-UpPrinterToPerUser.ps1 -ShareId '<share-guid>' -TenantId '<tenant-guid>'
+.EXAMPLE
+.\Convert-UpPrinterToPerUser.ps1 -AllUPPrinters -TenantId '<tenant-guid>' -WhatIfMode
+.NOTES
+Files use a private SYSTEM/Administrators-only directory per printer under
+Windows\UPConvert (Windows location obtained from the OS, not the environment).
+The dedicated root is created with a protected DACL and Administrators ownership;
+an existing root must match that security exactly and cannot be a reparse point.
+Run directories use SYSTEM ownership, or elevated-caller ownership for WhatIf.
+Root/Windows ancestry is validated before root creation or reuse. Unsafe existing
+directories are rejected, not repaired or deleted. SystemTemp permissions are
+not used or changed, including named-user grants on some Entra-joined devices.
+BackupDir is no longer supported and there is no alternate-path fallback.
+Ask your administrator to review any rejected ancestor/root permissions.
+Retained files are sensitive backups, not managed archives. Arrange secure
+retention and remove printed run directories when no longer required. The empty
+protected UPConvert root is kept for reuse; the script never removes it.
+Owner, protected/canonical DACL and exact ACE contents are checked; harmless
+auto-inheritance bookkeeping flags are ignored. To reset an altered root, stop all conversions,
+securely archive/remove any retained run directories, then verify the exact
+Windows\UPConvert path is an ordinary, non-reparse, empty directory. From an
+approved elevated console, use [IO.Directory]::Delete($rootPath, $false) with that
+verified path; non-recursive deletion refuses nonempty roots. Do not delete a
+reparse point or an unexplained/preexisting directory. The next run recreates
+the protected root. No permission repair or automatic deletion is performed.
+Profile hive loading supports local fully qualified drive paths only, not UNC
+or device paths, to avoid SYSTEM authentication to remote profile hosts.
+Before preparing an unloaded profile and immediately before reg load, require a
+fixed drive and reject reparse points along the hive path. These checks are not
+compatible with junctions or volume mount points anywhere along the path,
+including C:\Users. Unsupported locations are skipped with a warning for
+automatically discovered targets, but fail explicit UserSIDs. Inspection/access
+errors remain failures in both modes. Skipping an unsupported profile does not
+block migration for eligible users: disassociation removes the shared printer
+for skipped users too, without installing their per-user replacement. Rerunning
+this script cannot recover those users from a removed per-system DAF entry;
+use supported printer deployment tools to provide their printer separately.
+WhatIf does not disassociate the printer. These checks are not
+atomic: a user-writable profile can change between inspection and reg load.
+Run migration while target users and other profile writers are quiescent; this
+is not a race-resistant hive-loading mechanism for actively adversarial profiles.
+Literal unmatched percent characters are supported, but a matched percent pair
+within one path component (for example a%b%c) is rejected as a possible unresolved
+environment token, even when it is a literal directory name.
+
+A nonzero pairtool result is reported as incomplete, but imports still continue
+as in the original script; both associations may remain. Do not blindly retry a
+partial migration. Review per-user outcomes and use supported printer deployment
+or removal tools to reconcile the device. A registry backup is diagnostic data,
+not a validated rollback procedure.
+#>
 
 [CmdletBinding(DefaultParameterSetName = 'ConvertOne')]
 param (
@@ -39,12 +116,8 @@ param (
     [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Only target these user SIDs. Omit to target all real users with profiles.")]
     [string[]]$UserSIDs,
 
-    [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Directory for backup .reg files. Defaults to %TEMP%\UPConvert.")]
-    [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Directory for backup .reg files. Defaults to %TEMP%\UPConvert.")]
-    [string]$BackupDir = "$env:TEMP\UPConvert",
-
-    [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Dry run. Read state, plan changes, and print what WOULD be done. Make no changes.")]
-    [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Dry run. Read state, plan changes, and print what WOULD be done. Make no changes.")]
+    [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Prepare files and check hives, but do not disassociate, import, or restart services.")]
+    [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Prepare files and check hives, but do not disassociate, import, or restart services.")]
     [switch]$WhatIfMode,
 
     [Parameter(ParameterSetName = 'ConvertOne', HelpMessage = "Skip the pairtool disassociation step (e.g., if the per-system AEP is already gone).")]
@@ -55,6 +128,11 @@ param (
     [Parameter(ParameterSetName = 'ConvertAll', HelpMessage = "Skip the service restart at the end.")]
     [switch]$SkipRestart
 )
+
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    Write-Host 'ERROR: Run this script in 64-bit PowerShell on 64-bit Windows to avoid filesystem and registry redirection.' -ForegroundColor Red
+    exit 2
+}
 
 # --- Detect mode (no elevation required) --------------------------------------
 
@@ -147,18 +225,238 @@ if (-not $WhatIfMode) {
         Write-Host "       Use ``psexec -s -i pwsh`` to get a SYSTEM PowerShell prompt." -ForegroundColor Yellow
         exit 1
     }
-}
-
-if (-not (Test-Path $BackupDir)) {
-    New-Item -ItemType Directory -Path $BackupDir -Force | Out-Null
+} elseif (-not ([Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host 'ERROR: WhatIf preparation requires SYSTEM or an elevated administrator.' -ForegroundColor Red
+    exit 1
 }
 
 # --- Helpers (hive load/unload, copied/adapted from upcleanup.ps1) ------------
 
+function Assert-StagingAncestors {
+    param ([string]$Path, [switch]$AllowLeafReadAccess)
+
+    # Validate each parent before following its child. Once checked, low-privileged
+    # actors cannot replace it or change its DACL/reparse metadata.
+    $directory = [IO.DirectoryInfo]::new($Path)
+    $chain = @()
+    while ($null -ne $directory) {
+        $chain = @($directory.FullName) + $chain
+        $directory = $directory.Parent
+    }
+    $trusted = @('S-1-5-18', 'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    foreach ($ancestor in $chain) {
+        # Refuse missing/redirected parents rather than provisioning or repairing them.
+        $item = Get-Item -LiteralPath $ancestor -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Staging ancestor must be an existing ordinary directory: $ancestor"
+        }
+        # Check ownership and the complete DACL before allowing any private child creation.
+        $acl = Get-Acl -LiteralPath $ancestor -ErrorAction Stop
+        $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
+            $acl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All))
+        if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted -or
+            $null -eq $descriptor.DiscretionaryAcl -or -not $acl.AreAccessRulesCanonical) {
+            throw "Staging ancestor requires a trusted owner and canonical, non-null DACL: $ancestor"
+        }
+        foreach ($ace in $descriptor.DiscretionaryAcl) {
+            if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback) {
+                throw "Unsupported staging ancestor ACE: $ancestor"
+            }
+            # Conservative allow screening, not effective-access evaluation: denies
+            # cannot hide dangerous allows. Ignore inherit-only ACEs on each level;
+            # permit create-subdirectory alone, which cannot replace an existing child.
+            # Mask: WriteData/EA/Attributes, DeleteChild/Delete, WriteDac/Owner, GA/GW.
+            $dangerous = [int]0x500d0152
+            if ($ace.AceQualifier -eq [Security.AccessControl.AceQualifier]::AccessAllowed -and
+                $ace.SecurityIdentifier.Value -notin $trusted -and
+                -not ([int]$ace.AceFlags -band [int][Security.AccessControl.AceFlags]::InheritOnly) -and
+                (($ancestor -eq $Path -and -not $AllowLeafReadAccess) -or ($ace.AccessMask -band $dangerous))) {
+                throw "Unsupported applicable allow for $($ace.SecurityIdentifier.Value) on staging ancestor '$ancestor'. Ask your administrator to review this ACL against the supported SYSTEM/Administrators/TrustedInstaller policy; no ACL was changed."
+            }
+        }
+    }
+}
+
+function New-PrivateStagingDirectory {
+    param ([switch]$WhatIfMode)
+    $owner = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    if ($WhatIfMode) {
+        # The entry point validates elevation; WhatIf runs use that caller's owner.
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $owner = $identity.User
+    }
+    # Use the OS Windows location, not caller-controlled temp environment overrides.
+    $windows = [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)
+    if (-not $windows) { throw 'Cannot locate the Windows directory for fixed private staging.' }
+    Assert-StagingAncestors -Path $windows -AllowLeafReadAccess
+    $parent = [IO.Path]::Combine($windows, 'UPConvert')
+    # Keep the shared root Administrators-owned so SYSTEM and elevated WhatIf
+    # callers can reuse it without changing ownership between runs.
+    $rootSecurity = [Security.AccessControl.DirectorySecurity]::new()
+    $rootSecurity.SetSecurityDescriptorSddlForm('O:BAG:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+    Initialize-ProtectedStagingDirectory -Path $parent -Security $rootSecurity
+    Assert-StagingAncestors -Path $parent
+    # Never reuse an existing run directory, even if its random name collides.
+    $path = [IO.Path]::Combine($parent, "UPConvert-$([Guid]::NewGuid().ToString('N'))")
+    if ([IO.Directory]::Exists($path) -or [IO.File]::Exists($path)) {
+        throw "Staging directory collision: $path"
+    }
+    # Build a non-inheriting SYSTEM/Admins-only ACL before the directory exists;
+    # child files inherit this protection throughout export, reread, and import.
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner($owner)
+    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($sid),
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow)
+        $security.AddAccessRule($rule)
+    }
+    Initialize-ProtectedStagingDirectory -Path $path -Security $security
+    return $path
+}
+
+function Initialize-ProtectedStagingDirectory {
+    param ([string]$Path, [Security.AccessControl.DirectorySecurity]$Security)
+
+    # Reject redirected/existing unsafe directories before asking CreateDirectory
+    # to reuse them. Never repair permissions or remove an unexpected directory.
+    try {
+        $existing = Microsoft.PowerShell.Management\Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch [Management.Automation.ItemNotFoundException] {
+        $existing = $null
+    }
+    if ($null -ne $existing) {
+        Assert-ProtectedStagingDirectory -Path $Path -Security $Security
+        return
+    }
+    # Both APIs supply the DACL to directory creation, not after creation.
+    # The checked ancestry prevents low-privileged replacement without handle pinning.
+    if ($PSVersionTable.PSEdition -eq 'Desktop') {
+        $null = [IO.Directory]::CreateDirectory($path, $security)
+    } else {
+        [IO.FileSystemAclExtensions]::Create([IO.DirectoryInfo]::new($path), $security)
+    }
+    # Managed creation can return an existing directory. Never consume a child
+    # whose actual owner/DACL differs, even if a trusted actor raced creation.
+    Assert-ProtectedStagingDirectory -Path $Path -Security $Security
+}
+
+function Assert-ProtectedStagingDirectory {
+    param ([string]$Path, [Security.AccessControl.DirectorySecurity]$Security)
+    # 1) Reject redirected paths before inspecting the target's permissions.
+    $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Staging directory must be an ordinary non-reparse directory: $Path"
+    }
+    # 2) Read the stored DACL and the requested DACL separately. Do not compare
+    # whole SDDL strings: NTFS can add harmless auto-inheritance control flags.
+    $actual = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $sections = [Security.AccessControl.AccessControlSections]::Access
+    $actualDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($actual.GetSecurityDescriptorSddlForm($sections))
+    $expectedDescriptor = [Security.AccessControl.RawSecurityDescriptor]::new($Security.GetSecurityDescriptorSddlForm($sections))
+    # 3) Serialize each ACE to preserve its SID, type, mask and inheritance flags.
+    # Sorting ignores equivalent ACE ordering but retains duplicate ACE counts;
+    # Base64 is only a comparison representation, not encryption.
+    $actualAces = @($actualDescriptor.DiscretionaryAcl | ForEach-Object {
+        $bytes = [byte[]]::new($_.BinaryLength)
+        $_.GetBinaryForm($bytes, 0)
+        [Convert]::ToBase64String($bytes)
+    } | Sort-Object)
+    $expectedAces = @($expectedDescriptor.DiscretionaryAcl | ForEach-Object {
+        $bytes = [byte[]]::new($_.BinaryLength)
+        $_.GetBinaryForm($bytes, 0)
+        [Convert]::ToBase64String($bytes)
+    } | Sort-Object)
+    # 4) Require the expected owner, inheritance protection, canonical ordering
+    # and exact ACE contents. A null DACL grants unrestricted access, so reject it.
+    # Fail without repairing permissions or deleting retained backup directories.
+    if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $Security.GetOwner([Security.Principal.SecurityIdentifier]).Value -or
+        -not $actual.AreAccessRulesProtected -or -not $actual.AreAccessRulesCanonical -or
+        $null -eq $actualDescriptor.DiscretionaryAcl -or
+        ($actualAces -join ',') -cne ($expectedAces -join ',')) {
+        $diagnosticSections = [Security.AccessControl.AccessControlSections]'Owner, Access'
+        $actualSddl = $actual.GetSecurityDescriptorSddlForm($diagnosticSections)
+        $expectedSddl = $Security.GetSecurityDescriptorSddlForm($diagnosticSections)
+        throw "Staging directory owner or protected DACL differs from the requested security: $path. Actual owner/DACL: $actualSddl. Expected owner/DACL: $expectedSddl. Actual protected=$($actual.AreAccessRulesProtected), canonical=$($actual.AreAccessRulesCanonical). See .NOTES 'To reset an altered root'; no permissions were changed."
+    }
+}
+
+function Get-ConversionToolPath {
+    param ([ValidateSet('reg.exe','pairtool.exe')][string]$Name)
+    return [IO.Path]::Combine([Environment]::SystemDirectory, $Name)
+}
+
+function Invoke-ConversionNative {
+    param ([string]$Command, [string[]]$Arguments)
+
+    # WinPS 5.1 stderr redirection must not turn a successful exit into a
+    # terminating NativeCommandError under caller Stop. This scope is native-only.
+    $ErrorActionPreference = 'Continue'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $previousExitCode = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction Ignore
+    $previousExitValue = if ($null -ne $previousExitCode) { $previousExitCode.Value } else { $null }
+    try {
+        if ($Command -in @('reg.exe', 'pairtool.exe')) {
+            $Command = Get-ConversionToolPath -Name $Command
+        }
+        $global:LASTEXITCODE = $null
+        $output = @(& $Command @Arguments 2>&1)
+        if ($null -eq $global:LASTEXITCODE) { throw "Native command did not return an exit code: $Command" }
+        return [pscustomobject]@{ ExitCode = $global:LASTEXITCODE; Output = @($output | ForEach-Object {
+            if ($_ -is [Management.Automation.ErrorRecord]) { $_.Exception.Message }
+            else { $_.ToString() }
+        }) }
+    } finally {
+        # Native invocation changes global LASTEXITCODE; restore its prior value
+        # or absence so this helper does not alter the caller's command state.
+        if ($null -ne $previousExitCode) { $global:LASTEXITCODE = $previousExitValue }
+        else { Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue }
+    }
+}
+
+function Write-NewStagingFile {
+    param ([string]$Path, [string]$Content = '')
+    $stream = $null
+    $writer = $null
+    try {
+        try {
+            # CreateNew rejects stale files; exclusive access prevents concurrent writes.
+            $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $writer = [IO.StreamWriter]::new($stream, [Text.UnicodeEncoding]::new($false, $true))
+            $writer.NewLine = "`r`n"
+            $writer.Write($Content)
+        }
+        finally {
+            # Flush and close before reg.exe reopens the path; the private directory
+            # protects the closed-file interval. Dispose also runs after write errors.
+            if ($null -ne $writer) { $writer.Dispose() }
+            elseif ($null -ne $stream) { $stream.Dispose() }
+        }
+    } catch {
+        # Delete only output we created, never a colliding file. Preserve the failure
+        # so callers cannot import a partially written payload.
+        if ($null -ne $stream) {
+            try { [IO.File]::Delete($Path) }
+            catch { Write-Warning "Could not remove partial private file '$Path': $_" -WarningAction Continue }
+        }
+        throw
+    }
+}
+
 function Get-AllRealUserSIDs {
     # User profiles from ProfileList: S-1-5-21-* (domain/local) and S-1-12-1-* (Entra/AAD).
     $sids = @()
-    $result = reg query 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' 2>$null
+    $query = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('query', 'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList')
+    if ($query.ExitCode -ne 0) { throw "ProfileList query failed (exit $($query.ExitCode)): $($query.Output -join ' ')" }
+    $result = $query.Output
     if ($result) {
         foreach ($line in $result) {
             if ($line.Trim() -match 'ProfileList\\(S-1-(?:5-21|12-1)-[\d-]+)$') {
@@ -173,7 +471,9 @@ function Get-AllPerSystemShareIds {
     # Enumerate all MCP#<ShareId> subkeys under the per-system DAF store. Returns
     # an array of bare ShareId GUID strings (no MCP# prefix).
     $shareIds = @()
-    $result = reg query $REG_PERSYS_BASE 2>$null
+    $query = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('query', $REG_PERSYS_BASE)
+    if ($query.ExitCode -ne 0) { throw "Per-system printer enumeration failed (exit $($query.ExitCode)): $($query.Output -join ' ')" }
+    $result = $query.Output
     if ($result) {
         foreach ($line in $result) {
             if ($line.Trim() -match 'MCP#([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$') {
@@ -186,43 +486,99 @@ function Get-AllPerSystemShareIds {
 
 function Get-ProfileImagePath {
     param ([string]$UserSID)
-    $out = reg query "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$UserSID" /v ProfileImagePath 2>$null
-    if ($out) {
-        $m = [regex]::Match(($out -join "`n"), 'ProfileImagePath\s+REG_EXPAND_SZ\s+(.+)')
-        if ($m.Success) { return $m.Groups[1].Value.Trim() }
+    try {
+        $values = Get-ItemProperty -LiteralPath "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$UserSID" -ErrorAction Stop
+    } catch [Management.Automation.ItemNotFoundException] {
+        return $null
     }
-    return $null
+    $value = $values.PSObject.Properties['ProfileImagePath']
+    if ($null -eq $value -or $null -eq $value.Value) { return $null }
+    if ($value.Value -isnot [string]) { throw "ProfileImagePath must be a string for $UserSID." }
+    if ($value.Value -eq '') { return $null }
+    # The registry provider already expands REG_EXPAND_SZ; never expand twice.
+    $profilePath = $value.Value
+    if ($profilePath -notmatch '^[a-zA-Z]:\\' -or $profilePath.Contains('/') -or
+        $profilePath -match '%[^%\\]+%' -or
+        $profilePath.Substring(2).Contains(':') -or
+        $profilePath -match '(?:^|\\)\.\.?(?:\\|$)') {
+        throw "ProfileImagePath must be a fully qualified local drive path without dot segments, unresolved variables or alternate streams: $profilePath"
+    }
+    return $profilePath
 }
 
 function Test-HiveLoaded {
     param ([string]$UserSID)
-    $null = reg query "HKU\$UserSID" /ve 2>$null
-    return ($LASTEXITCODE -eq 0)
+    # reg.exe uses the same exit code for access denied and not found, and /ve
+    # also fails for an existing key without a default value. The provider keeps
+    # missing-key errors distinct without depending on localized native text.
+    $key = $null
+    try {
+        $key = Get-Item -LiteralPath "Registry::HKEY_USERS\$UserSID" -ErrorAction Stop
+        return $true
+    } catch [Management.Automation.ItemNotFoundException] {
+        return $false
+    } finally {
+        if ($null -ne $key) { $key.Close() }
+    }
 }
 
 function Mount-UserHive {
-    # Returns $true if WE loaded it (caller should unload), $false if it was already loaded or failed.
-    param ([string]$UserSID)
+    # True means we loaded it and must unload it; false means already loaded or
+    # missing profile/hive. Other load failures throw with native diagnostics.
+    param ([string]$UserSID, [string]$ProfilePath)
     if (Test-HiveLoaded -UserSID $UserSID) { return $false }
-    $profilePath = Get-ProfileImagePath -UserSID $UserSID
+    if (-not $ProfilePath) { $ProfilePath = Get-ProfileImagePath -UserSID $UserSID }
     if (-not $profilePath) {
         Write-Host "  WARN: No ProfileImagePath for $UserSID." -ForegroundColor Yellow
         return $false
     }
-    $ntuser = Join-Path $profilePath 'NTUSER.DAT'
-    if (-not (Test-Path -LiteralPath $ntuser)) {
+    $ntuser = [IO.Path]::Combine($ProfilePath, 'NTUSER.DAT')
+    if (-not (Test-Path -LiteralPath $ntuser -PathType Leaf -ErrorAction Stop)) {
         Write-Host "  WARN: NTUSER.DAT not found at $ntuser." -ForegroundColor Yellow
         return $false
     }
+    Assert-LocalProfileHivePath -Path $ntuser
     Write-Host "  Loading hive HKU\$UserSID from $ntuser" -ForegroundColor DarkGray
-    $null = reg load "HKU\$UserSID" $ntuser 2>$null
-    return ($LASTEXITCODE -eq 0)
+    $result = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('load', "HKU\$UserSID", $ntuser)
+    if ($result.ExitCode -ne 0) {
+        # A concurrent logon can load the hive after our probe. Let the caller use
+        # it, but return false so we never claim responsibility for unloading it.
+        if (Test-HiveLoaded -UserSID $UserSID) { return $false }
+        throw "reg load failed for $UserSID (exit $($result.ExitCode)): $($result.Output -join ' ')"
+    }
+    return $true
+}
+
+function Assert-LocalProfileHivePath {
+    param ([string]$Path)
+    # Policy rejections use NotSupportedException so preflight can warn/skip
+    # discovered targets without downgrading filesystem inspection/access errors.
+    $root = [IO.Path]::GetPathRoot($Path)
+    if ($root -notmatch '^[A-Za-z]:\\$' -or
+        [IO.DriveInfo]::new($root).DriveType -ne [IO.DriveType]::Fixed) {
+        throw [NotSupportedException]::new("Profile hive requires a fixed local drive: $Path")
+    }
+    $directory = [IO.DirectoryInfo]::new([IO.Path]::GetDirectoryName($Path))
+    $chain = @($Path)
+    while ($null -ne $directory) {
+        $chain = @($directory.FullName) + $chain
+        $directory = $directory.Parent
+    }
+    foreach ($entry in $chain) {
+        $item = Get-Item -LiteralPath $entry -Force -ErrorAction Stop
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw [NotSupportedException]::new("Profile hive path cannot contain a reparse point: $entry")
+        }
+    }
+    # These are point-in-time checks. User-writable profiles are not pinned
+    # against replacement between validation and reg.exe opening the hive.
 }
 
 function Dismount-UserHive {
     param ([string]$UserSID)
     [gc]::Collect(); [gc]::WaitForPendingFinalizers(); Start-Sleep -Milliseconds 500
-    $null = reg unload "HKU\$UserSID" 2>$null
+    $result = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('unload', "HKU\$UserSID")
+    if ($result.ExitCode -ne 0) { throw "reg unload failed for $UserSID (exit $($result.ExitCode))." }
 }
 
 # --- .reg parser: extract DEVPROP values from a per-system MCP export ---------
@@ -505,13 +861,45 @@ function Build-PerUserRegContent {
 
 # --- Main ---------------------------------------------------------------------
 
+function ConvertTo-CanonicalUserSID {
+    param ([string]$UserSID)
+
+    if ($UserSID -notmatch '^S-1-(?:5-21|12-1)-[0-9]+-[0-9]+-[0-9]+-[0-9]+$') {
+        throw 'Expected one local/domain or Entra user SID per argument (not comma-joined).'
+    }
+    foreach ($component in ($UserSID -split '-')[4..7]) {
+        $null = [uint32]::Parse($component, [Globalization.CultureInfo]::InvariantCulture)
+    }
+    # Normalize equivalent spellings before deduplication and registry-path use.
+    return [Security.Principal.SecurityIdentifier]::new($UserSID).Value
+}
+
+function Get-UniqueTargetSIDs {
+    param ([string[]]$TargetSIDs)
+
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($sid in $TargetSIDs) {
+        $target = $sid
+        try { $target = ConvertTo-CanonicalUserSID -UserSID $sid }
+        catch {
+            # Keep invalid targets so per-printer eligibility still reports failure.
+            Write-Host "  Invalid target '${sid}'; retaining for eligibility reporting: $_" -ForegroundColor Yellow
+        }
+        if (-not $seen.Add($target)) {
+            Write-Host "  Target '${sid}' already listed; skipping duplicate '$target'." -ForegroundColor DarkGray
+            continue
+        }
+        $target
+    }
+}
+
 function Convert-OnePrinter {
     param (
         [Parameter(Mandatory = $true)][string]$ShareId,
         [Parameter(Mandatory = $true)][string]$TenantId,
         [Parameter(Mandatory = $true)][string[]]$TargetSIDs,
         [Parameter(Mandatory = $true)][string]$Timestamp,
-        [Parameter(Mandatory = $true)][string]$BackupDir,
+        [switch]$AutomaticallyEnumeratedTargets,
         [switch]$WhatIfMode,
         [switch]$SkipDisassociate
     )
@@ -522,125 +910,256 @@ function Convert-OnePrinter {
     Write-Host "Converting printer ShareId: $ShareId" -ForegroundColor Cyan
     Write-Host "============================================================" -ForegroundColor Cyan
 
-    # 1) Verify per-system entry exists
-    $null = reg query $regPerSysKey 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Per-system DAF entry not found: $regPerSysKey" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'no DAF entry'; Installs = @() }
-    }
-
-    # 2) Backup per-system entry
-    $backupFile = Join-Path $BackupDir "PerSystem-MCP-$ShareId-$Timestamp.reg"
-    Write-Host "Step 1: Exporting per-system DAF entry to backup..." -ForegroundColor Cyan
-    Write-Host "  $backupFile"
-    $null = reg export $regPerSysKey $backupFile /y 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: reg export failed for $regPerSysKey" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'export failed'; Installs = @() }
-    }
-
-    # 3) Parse per-system properties
-    Write-Host "Step 2: Parsing per-system DAF properties..." -ForegroundColor Cyan
-    $perSystem = Read-DafExport -RegFilePath $backupFile -AnchorMcpKey "MCP#$ShareId"
-    if ($perSystem.Count -eq 0) {
-        Write-Host "ERROR: No DAF properties parsed from $backupFile" -ForegroundColor Red
-        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'parse failed'; Installs = @() }
-    }
-    Write-Host "  Found $($perSystem.Count) properties."
-
-    # 4) Disassociate per-system AEP via pairtool
-    if (-not $SkipDisassociate) {
-        Write-Host "Step 3: Disassociating per-system AEP via pairtool..." -ForegroundColor Cyan
-        $pairtool = "$env:SystemRoot\System32\pairtool.exe"
-        if (-not (Test-Path $pairtool)) {
-            Write-Host "ERROR: pairtool.exe not found at $pairtool." -ForegroundColor Red
-            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'pairtool missing'; Installs = @() }
-        }
-        if ($WhatIfMode) {
-            Write-Host "  [WHATIF] Would run: $pairtool -disassociate `"MCP#$ShareId`""
-        } else {
-            Write-Host "  Running: $pairtool -disassociate `"MCP#$ShareId`""
-            # Capture stdout/stderr so it doesn't leak into the function's pipeline output
-            # (otherwise pairtool's text lines get returned alongside our [pscustomobject] result).
-            $pairtoolOutput = & $pairtool -disassociate "MCP#$ShareId" 2>&1
-            $rc = $LASTEXITCODE
-            foreach ($line in $pairtoolOutput) {
-                Write-Host "    $line" -ForegroundColor DarkGray
-            }
-            if ($rc -ne 0) {
-                Write-Host "  WARN: pairtool returned 0x$($rc.ToString('X8')). Continuing anyway." -ForegroundColor Yellow
-            } else {
-                Write-Host "  Disassociation succeeded." -ForegroundColor Green
-            }
-        }
-    } else {
-        Write-Host "Step 3: Skipping pairtool disassociation (-SkipDisassociate)." -ForegroundColor Yellow
-    }
-
-    # 5) For each user, write per-user DAF entry
-    Write-Host "Step 4: Writing per-user DAF entries..." -ForegroundColor Cyan
+    # Keep progress local to this printer so an unexpected failure can return
+    # an explicit uncertain outcome without discarding earlier successful imports.
+    $backupFile = $null
+    $backupComplete = $false
     $installs = @()
-    foreach ($sid in $TargetSIDs) {
-        Write-Host ""
-        Write-Host "  User: $sid" -ForegroundColor White
-        $weLoaded = $false
+    $errors = @()
+    $skippedCount = 0
+    try {
+        # 1) Verify per-system entry exists
+        $query = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('query', $regPerSysKey)
+        if ($query.ExitCode -ne 0) {
+            $queryError = "Per-system DAF query failed for $regPerSysKey (exit $($query.ExitCode)): $($query.Output -join ' ')"
+            Write-Host "ERROR: $queryError" -ForegroundColor Red
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = $queryError; Backup = $null; Installs = @() }
+        }
+
+        $stagingDir = $null
+        $backupComplete = $false
+        $backupReserved = $false
         try {
-            if (-not (Test-HiveLoaded -UserSID $sid)) {
-                $weLoaded = Mount-UserHive -UserSID $sid
-                if (-not (Test-HiveLoaded -UserSID $sid)) {
-                    Write-Host "    SKIP: hive not available for $sid." -ForegroundColor Yellow
-                    continue
-                }
+            # 2) Reserve an exclusive file before exporting; /y only replaces our file.
+            $savedPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Stop'
+                $stagingDir = New-PrivateStagingDirectory -WhatIfMode:$WhatIfMode
+                Write-Host "  Private staging and backups: $stagingDir"
+                $backupFile = [IO.Path]::Combine($stagingDir, "PerSystem-MCP-$ShareId-$Timestamp.reg")
+                Write-NewStagingFile -Path $backupFile
+                $backupReserved = $true
+            } catch {
+                Write-Host "ERROR: Private staging preparation failed: $_" -ForegroundColor Red
+                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "staging: $_"; Backup = $null; Installs = @() }
+            } finally { $ErrorActionPreference = $savedPreference }
+            Write-Host "Step 1: Exporting per-system DAF entry to backup..." -ForegroundColor Cyan
+            Write-Host "  $backupFile"
+            $export = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('export', $regPerSysKey, $backupFile, '/y')
+            if ($export.ExitCode -ne 0) {
+                Write-Host "ERROR: reg export failed for $regPerSysKey" -ForegroundColor Red
+                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'export failed'; Backup = $null; Installs = @() }
             }
-
-            $instanceGuid = "{$([Guid]::NewGuid().ToString())}"
-            $regContent = Build-PerUserRegContent `
-                -UserSID $sid `
-                -ShareId $ShareId `
-                -InstanceGuid $instanceGuid `
-                -TenantId $TenantId `
-                -PerSystem $perSystem
-
-            $regFile = Join-Path $BackupDir "PerUser-$sid-MCP-$ShareId-$Timestamp.reg"
-            $writer = [IO.StreamWriter]::new($regFile, $false, [Text.UnicodeEncoding]::new($false, $true))
-            $writer.NewLine = "`r`n"
-            $writer.Write($regContent)
-            $writer.Dispose()
-            Write-Host "    Generated: $regFile" -ForegroundColor DarkGray
-            Write-Host "    Instance GUID: $instanceGuid"
-
-            if ($WhatIfMode) {
-                Write-Host "    [WHATIF] Would import the .reg file above."
-            } else {
-                $null = reg import $regFile 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Write-Host "    Imported successfully." -ForegroundColor Green
-                    $installs += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile }
-                } else {
-                    Write-Host "    ERROR: reg import failed (exit $LASTEXITCODE)." -ForegroundColor Red
-                }
-            }
+            $backupComplete = $true
         }
         finally {
-            if ($weLoaded) { Dismount-UserHive -UserSID $sid }
+            # Keep complete exports and payloads as private backups; remove only
+            # incomplete output that this invocation created.
+            if ($stagingDir -and -not $backupComplete) {
+                try {
+                    if ($backupReserved) { [IO.File]::Delete($backupFile) }
+                    [IO.Directory]::Delete($stagingDir, $false)
+                } catch { Write-Warning "Could not remove incomplete staging '$stagingDir': $_" -WarningAction Continue }
+            }
         }
-    }
 
-    return [pscustomobject]@{ ShareId = $ShareId; Success = $true; Backup = $backupFile; Installs = $installs }
+        # 3) Reread only the private export, never a user-selectable backup path.
+        # Stop is file-scoped; native commands independently check exit codes
+        # through Invoke-ConversionNative without inheriting file-preparation Stop.
+        $savedPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Stop'
+            Write-Host "Step 2: Parsing per-system DAF properties..." -ForegroundColor Cyan
+            $perSystem = Read-DafExport -RegFilePath $backupFile -AnchorMcpKey "MCP#$ShareId"
+            if ($perSystem.Count -eq 0) {
+                throw "No DAF properties parsed from $backupFile"
+            }
+            Write-Host "  Found $($perSystem.Count) properties."
+        } catch {
+            Write-Host "ERROR: Private backup read failed: $_" -ForegroundColor Red
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = "preparation: $_"; Backup = $backupFile; Installs = @() }
+        } finally { $ErrorActionPreference = $savedPreference }
+
+        # 4) Check eligibility without loading hives, then finish payload writes.
+        # Existence is only preflight: actual hive loads/imports can still fail.
+        $payloads = @()
+        foreach ($sid in @(Get-UniqueTargetSIDs -TargetSIDs $TargetSIDs)) {
+            $profilePath = $null
+            $ineligibleReason = $null
+            try {
+                $sid = ConvertTo-CanonicalUserSID -UserSID $sid
+                if (-not (Test-HiveLoaded -UserSID $sid)) {
+                    $profilePath = Get-ProfileImagePath -UserSID $sid
+                    if (-not $profilePath) {
+                        $ineligibleReason = 'ProfileImagePath is missing.'
+                    } else {
+                        $ntuser = [IO.Path]::Combine($profilePath, 'NTUSER.DAT')
+                        if (-not (Test-Path -LiteralPath $ntuser -PathType Leaf -ErrorAction Stop)) {
+                            $ineligibleReason = "NTUSER.DAT is missing: $ntuser"
+                        } else {
+                            try { Assert-LocalProfileHivePath -Path $ntuser }
+                            catch [NotSupportedException] { $ineligibleReason = $_.Exception.Message }
+                        }
+                    }
+                }
+            } catch {
+                Write-Host "  SKIP: Ineligible target '${sid}': $_" -ForegroundColor Yellow
+                $errors += "ineligible target '${sid}': $_"
+                continue
+            }
+            if ($ineligibleReason) {
+                if ($AutomaticallyEnumeratedTargets) {
+                    Write-Host "  WARN: Skipping automatically discovered target '${sid}': $ineligibleReason" -ForegroundColor Yellow
+                    $skippedCount++
+                } else {
+                    Write-Host "  SKIP: Ineligible target '${sid}': $ineligibleReason" -ForegroundColor Yellow
+                    $errors += "ineligible target '${sid}': $ineligibleReason"
+                }
+                continue
+            }
+            $savedPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Stop'
+                $instanceGuid = "{$([Guid]::NewGuid().ToString())}"
+                $regContent = Build-PerUserRegContent `
+                    -UserSID $sid `
+                    -ShareId $ShareId `
+                    -InstanceGuid $instanceGuid `
+                    -TenantId $TenantId `
+                    -PerSystem $perSystem
+                $regFile = [IO.Path]::Combine($stagingDir, "PerUser-$sid-MCP-$ShareId-$([Guid]::NewGuid().ToString('N')).reg")
+                Write-NewStagingFile -Path $regFile -Content $regContent
+                $payloads += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile; ProfilePath = $profilePath }
+                Write-Host "  Prepared for ${sid}: $regFile" -ForegroundColor DarkGray
+            } catch {
+                Write-Host "ERROR: Private payload preparation failed for ${sid}: $_. System printer unchanged. Backup: $backupFile" -ForegroundColor Red
+                $errors += "preparation for ${sid}: $_"
+                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $backupFile; Installs = @(); SkippedCount = $skippedCount }
+            } finally { $ErrorActionPreference = $savedPreference }
+        }
+        if ($payloads.Count -eq 0) {
+            Write-Host "ERROR: No eligible targets for $ShareId; leaving the per-system printer unchanged. Backup: $backupFile" -ForegroundColor Red
+            $errors += 'no eligible targets'
+            return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $backupFile; Installs = @(); SkippedCount = $skippedCount }
+        }
+
+        # 5) Disassociate only after preflight; actual native failures are not a
+        # transaction. Keep processing, but never report those outcomes as success.
+        if (-not $SkipDisassociate) {
+            Write-Host "Step 3: Disassociating per-system AEP via pairtool..." -ForegroundColor Cyan
+            $pairtool = Get-ConversionToolPath -Name 'pairtool.exe'
+            if (-not (Test-Path $pairtool)) {
+                Write-Host "ERROR: pairtool.exe not found at $pairtool." -ForegroundColor Red
+                return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = 'pairtool missing'; Backup = $backupFile; Installs = @(); SkippedCount = $skippedCount }
+            }
+            if ($WhatIfMode) {
+                Write-Host "  [WHATIF] Would run: $pairtool -disassociate `"MCP#$ShareId`""
+            } else {
+                Write-Host "  Running: $pairtool -disassociate `"MCP#$ShareId`""
+                # Capture stdout/stderr so it doesn't leak into the function's pipeline output
+                # (otherwise pairtool's text lines get returned alongside our [pscustomobject] result).
+                $script:printerMutationAttempted = $true
+                $pairResult = Invoke-ConversionNative -Command $pairtool -Arguments @('-disassociate', "MCP#$ShareId")
+                $rc = $pairResult.ExitCode
+                foreach ($line in $pairResult.Output) {
+                    Write-Host "    $line" -ForegroundColor DarkGray
+                }
+                if ($rc -ne 0) {
+                    Write-Host "  WARN: pairtool returned 0x$($rc.ToString('X8')). Continuing anyway." -ForegroundColor Yellow
+                    $errors += "pairtool exit $rc"
+                } else {
+                    Write-Host "  Disassociation succeeded." -ForegroundColor Green
+                }
+            }
+        } else {
+            Write-Host "Step 3: Skipping pairtool disassociation (-SkipDisassociate)." -ForegroundColor Yellow
+        }
+
+        # 6) Import the already-complete private payloads using normal hive handling.
+        Write-Host "Step 4: Writing per-user DAF entries..." -ForegroundColor Cyan
+        foreach ($payload in $payloads) {
+            $sid = $payload.SID
+            Write-Host ""
+            Write-Host "  User: $sid" -ForegroundColor White
+            $weLoaded = $false
+            try {
+                if (-not (Test-HiveLoaded -UserSID $sid)) {
+                    $weLoaded = Mount-UserHive -UserSID $sid -ProfilePath $payload.ProfilePath
+                    if (-not $weLoaded -and -not (Test-HiveLoaded -UserSID $sid)) {
+                        Write-Host "    SKIP: hive not available for $sid." -ForegroundColor Yellow
+                        $errors += "hive unavailable: $sid"
+                        continue
+                    }
+                }
+
+                $instanceGuid = $payload.InstanceGuid
+                $regFile = $payload.RegFile
+                Write-Host "    Generated: $regFile" -ForegroundColor DarkGray
+                Write-Host "    Instance GUID: $instanceGuid"
+
+                if ($WhatIfMode) {
+                    Write-Host "    [WHATIF] Would import the .reg file above."
+                } else {
+                    # Catch only this import, not surrounding hive/native commands.
+                    # An invocation exception means uncertain/failed completion,
+                    # not evidence of rollback; stderr alone is handled locally.
+                    try {
+                        $script:printerMutationAttempted = $true
+                        $import = Invoke-ConversionNative -Command 'reg.exe' -Arguments @('import', $regFile)
+                    }
+                    catch {
+                        Write-Host "    ERROR: Import failed or its completion is uncertain for ${sid}: $_. Payload: $regFile" -ForegroundColor Red
+                        $errors += "import exception for ${sid}: $_"
+                        continue
+                    }
+                    if ($import.ExitCode -eq 0) {
+                        Write-Host "    Imported successfully." -ForegroundColor Green
+                        $installs += [pscustomobject]@{ SID = $sid; InstanceGuid = $instanceGuid; RegFile = $regFile }
+                    } else {
+                        Write-Host "    ERROR: reg import failed (exit $($import.ExitCode)). $($import.Output -join ' ')" -ForegroundColor Red
+                        $errors += "import exit $($import.ExitCode) for $sid"
+                    }
+                }
+            } catch {
+                Write-Host "    ERROR: User ${sid} did not complete; state uncertain: $_. Payload: $($payload.RegFile)" -ForegroundColor Red
+                $errors += "user exception for ${sid}: $_"
+            } finally {
+                if ($weLoaded) {
+                    try { Dismount-UserHive -UserSID $sid }
+                    catch {
+                        # Preserve both the install error and cleanup failure.
+                        Write-Host "    ERROR: Could not unload hive ${sid}: $_" -ForegroundColor Red
+                        $errors += "hive unload exception for ${sid}: $_"
+                    }
+                }
+            }
+        }
+
+        return [pscustomobject]@{ ShareId = $ShareId; Success = ($errors.Count -eq 0); Error = ($errors -join '; '); Backup = $backupFile; Installs = $installs; SkippedCount = $skippedCount }
+    } catch {
+        Write-Host "ERROR: Printer $ShareId did not complete; state uncertain: $_. Backup: $backupFile" -ForegroundColor Red
+        $errors += "printer exception: $_"
+        return [pscustomobject]@{ ShareId = $ShareId; Success = $false; Error = ($errors -join '; '); Backup = $(if ($backupComplete) { $backupFile } else { $null }); Installs = $installs; SkippedCount = $skippedCount }
+    }
 }
 
 # --- Resolve ShareIds to convert ---------------------------------------------
 
-if ($PSCmdlet.ParameterSetName -eq 'ConvertAll') {
-    $shareIdsToConvert = @(Get-AllPerSystemShareIds)
-} else {
-    $shareIdsToConvert = @($ShareId)
+try {
+    if ($PSCmdlet.ParameterSetName -eq 'ConvertAll') {
+        $shareIdsToConvert = @(Get-AllPerSystemShareIds)
+    } else {
+        $shareIdsToConvert = @($ShareId)
+    }
+} catch {
+    Write-Host "ERROR: Could not enumerate printers: $_" -ForegroundColor Red
+    exit 1
 }
 
 Write-Host "=== Convert per-system UP printer(s) to per-user ===" -ForegroundColor Cyan
 Write-Host "  Mode           : $($PSCmdlet.ParameterSetName)$(if ($WhatIfMode) { ' (WHATIF)' } else { '' })"
 Write-Host "  TenantId param : $TenantId"
-Write-Host "  Backup dir     : $BackupDir"
+Write-Host "  Backups        : private per-printer Windows\UPConvert directory"
 Write-Host "  ShareId(s)     : $($shareIdsToConvert.Count) printer(s)"
 foreach ($s in $shareIdsToConvert) { Write-Host "    $s" -ForegroundColor DarkGray }
 Write-Host ""
@@ -653,13 +1172,19 @@ if ($shareIdsToConvert.Count -eq 0) {
 # --- Resolve target users (once) ---------------------------------------------
 
 Write-Host "Resolving target users..." -ForegroundColor Cyan
-if ($UserSIDs -and $UserSIDs.Count -gt 0) {
-    $targetSIDs = $UserSIDs
-    Write-Host "  Using -UserSIDs filter: $($targetSIDs -join ', ')"
-} else {
-    $targetSIDs = @(Get-AllRealUserSIDs)
-    Write-Host "  Found $($targetSIDs.Count) real user profile(s)."
+try {
+    if ($UserSIDs -and $UserSIDs.Count -gt 0) {
+        $targetSIDs = $UserSIDs
+        Write-Host "  Using -UserSIDs filter: $($targetSIDs -join ', ')"
+    } else {
+        $targetSIDs = @(Get-AllRealUserSIDs)
+        Write-Host "  Found $($targetSIDs.Count) real user profile(s)."
+    }
+} catch {
+    Write-Host "ERROR: Could not enumerate target users: $_" -ForegroundColor Red
+    exit 1
 }
+$targetSIDs = @(Get-UniqueTargetSIDs -TargetSIDs $targetSIDs)
 foreach ($s in $targetSIDs) { Write-Host "    $s" -ForegroundColor DarkGray }
 
 if ($targetSIDs.Count -eq 0) {
@@ -671,32 +1196,56 @@ if ($targetSIDs.Count -eq 0) {
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $results = @()
-foreach ($sid in $shareIdsToConvert) {
-    # Force scalar capture: if Convert-OnePrinter ever leaks stdout, $r could become an array.
-    # Wrap with @(...) and grab the last element (the [pscustomobject] result we explicitly return).
-    $r = @(Convert-OnePrinter -ShareId $sid -TenantId $TenantId -TargetSIDs $targetSIDs `
-                              -Timestamp $timestamp -BackupDir $BackupDir `
-                              -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
-    $results += ,($r[-1])
-}
-
-# --- Restart services (once) -------------------------------------------------
-
-if (-not $SkipRestart -and -not $WhatIfMode) {
-    Write-Host ""
-    Write-Host "Restarting services..." -ForegroundColor Cyan
-    foreach ($svc in @('DeviceAssociationService', 'Spooler')) {
-        Write-Host "  Restarting $svc..."
+$restartFailed = $false
+$script:printerMutationAttempted = $false
+try {
+    foreach ($sid in $shareIdsToConvert) {
+        # Force scalar capture: if Convert-OnePrinter ever leaks stdout, $r could become an array.
+        # Wrap with @(...) and grab the last element (the [pscustomobject] result we explicitly return).
         try {
-            Restart-Service -Name $svc -Force -ErrorAction Stop
-            Write-Host "    OK." -ForegroundColor Green
+            $r = @(Convert-OnePrinter -ShareId $sid -TenantId $TenantId -TargetSIDs $targetSIDs `
+                                      -Timestamp $timestamp `
+                                      -AutomaticallyEnumeratedTargets:(-not ($UserSIDs -and $UserSIDs.Count -gt 0)) `
+                                      -WhatIfMode:$WhatIfMode -SkipDisassociate:$SkipDisassociate)
         } catch {
-            Write-Host "    WARN: $($_.Exception.Message)" -ForegroundColor Yellow
+            # Last-resort boundary for failures outside the printer's own catch.
+            Write-Host "ERROR: Printer $sid failed unexpectedly: $_" -ForegroundColor Red
+            $results += [pscustomobject]@{ ShareId = $sid; Success = $false; Error = "unexpected printer error; state uncertain: $_"; Backup = $null; Installs = @() }
+            continue
+        }
+        if ($r.Count -eq 0 -or $null -eq $r[-1].PSObject.Properties['Success']) {
+            # Some caller preferences can suppress a terminating function error.
+            # Missing completion is uncertain, never an omitted successful printer.
+            Write-Host "ERROR: No completion result for $sid; inspect preceding errors and printed backup paths." -ForegroundColor Red
+            $results += [pscustomobject]@{ ShareId = $sid; Success = $false; Error = 'conversion did not complete; state uncertain'; Backup = $null; Installs = @() }
+        } else {
+            $results += ,($r[-1])
         }
     }
-} elseif ($SkipRestart) {
-    Write-Host ""
-    Write-Host "Skipping service restart (-SkipRestart)." -ForegroundColor Yellow
+}
+finally {
+    # --- Restart services (once) ---------------------------------------------
+    # An attempted native mutation may have partially completed even if it threw.
+    # Preflight-only failures do not warrant interrupting other users' print jobs.
+    if ($script:printerMutationAttempted -and -not $SkipRestart -and -not $WhatIfMode) {
+        Write-Host ""
+        Write-Host "Restarting services..." -ForegroundColor Cyan
+        foreach ($svc in @('DeviceAssociationService', 'Spooler')) {
+            Write-Host "  Restarting $svc..."
+            try {
+                Restart-Service -Name $svc -Force -ErrorAction Stop
+                Write-Host "    OK." -ForegroundColor Green
+            } catch {
+                Write-Host "    WARN: $($_.Exception.Message)" -ForegroundColor Yellow
+                $restartFailed = $true
+            }
+        }
+    } elseif ($SkipRestart) {
+        Write-Host ""
+        Write-Host "Skipping service restart (-SkipRestart)." -ForegroundColor Yellow
+    } elseif (-not $WhatIfMode -and -not $script:printerMutationAttempted) {
+        Write-Host "Skipping service restart: no disassociation or import was attempted." -ForegroundColor DarkGray
+    }
 }
 
 # --- Summary -----------------------------------------------------------------
@@ -709,12 +1258,14 @@ Write-Host "  Printers processed : $($results.Count)"
 Write-Host "  Succeeded          : $($succeeded.Count)"
 Write-Host "  Failed             : $($failed.Count)"
 foreach ($r in $succeeded) {
-    Write-Host ("    [{0}]  installs={1}/{2}  backup={3}" -f $r.ShareId, $r.Installs.Count, $targetSIDs.Count, $r.Backup) -ForegroundColor Green
+    Write-Host ("    [{0}]  installs={1}/{2}  skipped={3}  backup={4}" -f $r.ShareId, $r.Installs.Count, ($targetSIDs.Count - [int]$r.SkippedCount), [int]$r.SkippedCount, $r.Backup) -ForegroundColor Green
 }
 foreach ($r in $failed) {
-    Write-Host ("    [{0}]  FAILED: {1}" -f $r.ShareId, $r.Error) -ForegroundColor Red
+    Write-Host ("    [{0}]  FAILED: {1}; installs={2}/{3}; skipped={4}; backup={5}" -f $r.ShareId, $r.Error, $r.Installs.Count, ($targetSIDs.Count - [int]$r.SkippedCount), [int]$r.SkippedCount, $r.Backup) -ForegroundColor Red
 }
 Write-Host "Done."
+if ($failed.Count -gt 0 -or $restartFailed) { exit 1 }
+exit 0
 # SIG # Begin signature block
 # MIIoKwYJKoZIhvcNAQcCoIIoHDCCKBgCAQExDzANBglghkgBZQMEAgEFADB5Bgor
 # BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
