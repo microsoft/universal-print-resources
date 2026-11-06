@@ -1,0 +1,3 @@
+# These scripts are code-signed. Store them byte for byte so line-ending conversion cannot invalidate the signature.
+/Test-MissingUPPrinters.ps1 -text
+/Repair-MissingUPPrinters.ps1 -text
