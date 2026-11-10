@@ -96,10 +96,10 @@ if ($Case) {
         }
         function Assert-LocalProfileHivePath {
             param($Path)
-            if ($Case -match '^driver-(?:auto|explicit)-(?:reparse|nonfixed|inspection-error)$' -and
-                $script:profileCheckSID -match '1002$') {
+            if ($Case -match '^driver-(?:auto|explicit)-(?:reparse(?:-whatif)?|(?:all-)?nonfixed|inspection-error)$' -and
+                ($script:profileCheckSID -match '1002$' -or $Case -eq 'driver-auto-all-nonfixed')) {
                 if ($Case -like '*inspection-error') { throw [UnauthorizedAccessException]::new('Injected profile inspection denied') }
-                $reason = if ($Case -like '*reparse') { 'Profile hive path cannot contain a reparse point' } else { 'Profile hive requires a fixed local drive' }
+                $reason = if ($Case -like '*reparse*') { 'Profile hive path cannot contain a reparse point' } else { 'Profile hive requires a fixed local drive' }
                 throw [NotSupportedException]::new($reason)
             }
             if ($Path -cne [IO.Path]::Combine($fixture,'NTUSER.DAT') -and $Case -ne 'directory-ntuser') {
@@ -409,7 +409,7 @@ if ($Case) {
             }
             if ($Case -eq 'driver-enumeration-failure') { $UserSIDs = @() }
             $TenantId = $arguments.TenantId
-            $WhatIfMode = ($Case -eq 'driver-auto-whatif')
+            $WhatIfMode = ($Case -in @('driver-auto-whatif','driver-auto-reparse-whatif'))
             $SkipDisassociate = $false
             $SkipRestart = $false
             if ($Case -in @('driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart')) {
@@ -540,6 +540,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
         'driver-staging-only-failure','driver-query-only-failure','driver-export-only-failure','driver-empty-sid',
         'driver-pair-only-exception','driver-import-only-exception','driver-import-only-success','driver-skip-restart',
         'driver-auto-reparse','driver-explicit-reparse','driver-auto-nonfixed','driver-explicit-nonfixed',
+        'driver-auto-reparse-whatif','driver-auto-all-nonfixed',
         'driver-auto-inspection-error','driver-explicit-inspection-error','early-architecture','inprocess-success-exit')) {
         $output = (& $runtime -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath `
             -Case $caseValue -Preference $preferenceValue 2>&1 | Out-String)
@@ -560,6 +561,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             'mount-race' { 2 }
             'driver-auto-reparse' { 2 } 'driver-explicit-reparse' { 2 }
             'driver-auto-nonfixed' { 2 } 'driver-explicit-nonfixed' { 2 }
+            'driver-auto-reparse-whatif' { 2 }
             'driver-auto-inspection-error' { 2 } 'driver-explicit-inspection-error' { 2 }
             'driver-pair-only-exception' { 1 } 'driver-import-only-exception' { 1 }
             'driver-import-only-success' { 1 } 'driver-skip-restart' { 1 }
@@ -618,12 +620,13 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 throw "WhatIf entry-point elevation diagnostic failed:`n$output"
             }
         } elseif ($policyCase) {
-            $warningOnly = $caseValue -in @('driver-auto-stale','driver-auto-missing-ntuser','driver-auto-whatif','driver-auto-missing-key','driver-auto-missing-value','driver-auto-reparse','driver-auto-nonfixed')
+            $warningOnly = $caseValue -in @('driver-auto-stale','driver-auto-missing-ntuser','driver-auto-whatif','driver-auto-missing-key','driver-auto-missing-value')
             $expectedExit = if ($warningOnly) { 0 } else { 1 }
             $failedCount = if ($warningOnly) { 0 } elseif ($caseValue -eq 'driver-auto-import-error') { 1 } else { 2 }
             $skips = if ($caseValue -eq 'driver-auto-no-eligible') { 2 } elseif ($warningOnly -or $caseValue -eq 'driver-auto-import-error') { 1 } else { 0 }
-            $imports = if ($caseValue -in @('driver-auto-no-eligible','driver-auto-build-error','driver-auto-whatif')) { 0 } elseif ($caseValue -eq 'driver-auto-import-error') { 1 } else { 2 }
-            $pairs = if ($caseValue -in @('driver-auto-no-eligible','driver-auto-build-error','driver-auto-whatif')) { 0 } else { 2 }
+            $noMutation = $caseValue -in @('driver-auto-no-eligible','driver-auto-build-error','driver-auto-whatif','driver-auto-reparse-whatif','driver-auto-all-nonfixed')
+            $imports = if ($noMutation) { 0 } elseif ($caseValue -eq 'driver-auto-import-error') { 1 } else { 2 }
+            $pairs = if ($noMutation) { 0 } else { 2 }
             if ($exitCode -ne $expectedExit -or $output -notmatch "Failed\s+:\s+$failedCount" -or
                 $output -notmatch "Succeeded\s+:\s+$(2 - $failedCount)" -or
                 ([regex]::Matches($output, 'WARN: Skipping automatically discovered target')).Count -ne (2 * $skips) -or
@@ -632,7 +635,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 ([regex]::Matches($output, '(?m)^DISASSOCIATED\r?$')).Count -ne $pairs) {
                 throw "Enumeration/explicit eligibility policy failed:`n$output"
             }
-            if ($caseValue -eq 'driver-auto-whatif') {
+            if ($caseValue -in @('driver-auto-whatif','driver-auto-reparse-whatif')) {
                 if ($output -match 'RESTARTED:' -or $output -notmatch '\[WHATIF\]') { throw "WhatIf policy case mutated host operations:`n$output" }
             } elseif ($pairs -eq 0 -and $imports -eq 0) {
                 if ($output -match 'RESTARTED:') { throw "Preflight-only policy case restarted services:`n$output" }
@@ -642,6 +645,7 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
             $expectedSummary = if ($warningOnly) {
                 if ($caseValue -eq 'driver-auto-whatif') { 'installs=0/1' } else { 'installs=1/1' }
             } elseif ($caseValue -eq 'driver-auto-no-eligible') { 'installs=0/0' }
+            elseif ($caseValue -in @('driver-auto-reparse-whatif','driver-auto-all-nonfixed')) { 'installs=0/2' }
             elseif ($caseValue -eq 'driver-auto-build-error') { 'installs=0/2' }
             elseif ($caseValue -eq 'driver-auto-import-error') { 'installs=0/1' }
             else { 'installs=1/2' }
@@ -662,6 +666,8 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 'driver-auto-import-error' { 'reg import failed' }
                 'driver-auto-mount-failure' { 'reg load failed.*exit 5.*Injected load denied' }
                 'driver-auto-reparse' { 'cannot contain a reparse point' }
+                'driver-auto-reparse-whatif' { 'cannot contain a reparse point' }
+                'driver-auto-all-nonfixed' { 'requires a fixed local drive' }
                 'driver-explicit-reparse' { 'cannot contain a reparse point' }
                 'driver-auto-nonfixed' { 'requires a fixed local drive' }
                 'driver-explicit-nonfixed' { 'requires a fixed local drive' }
@@ -670,6 +676,17 @@ foreach ($preferenceValue in @('Continue', 'Stop', 'SilentlyContinue')) {
                 default { 'ProfileImagePath is missing|NTUSER.DAT is missing' }
             }
             if ($output -notmatch $expectedDiagnostic) { throw "Policy case lost diagnostic:`n$output" }
+            if ($caseValue -in @('driver-auto-reparse','driver-auto-nonfixed','driver-auto-reparse-whatif','driver-auto-all-nonfixed')) {
+                if ($output -notmatch "ineligible target 'S-1-5-21-1-2-3-1002'" -or
+                    $output -match 'WARN: Skipping automatically discovered target') {
+                    throw "Unsupported existing hive was not reported as an identified failure:`n$output"
+                }
+                if ($caseValue -eq 'driver-auto-all-nonfixed' -and
+                    ($output -notmatch "ineligible target 'S-1-5-21-1-2-3-1001'" -or
+                     $output -notmatch 'No eligible targets.*leaving the per-system printer unchanged')) {
+                    throw "All-unsupported profile case lost diagnostics or unchanged-printer guarantee:`n$output"
+                }
+            }
         } elseif ($caseValue -eq 'printer-enumeration-failure') {
             if ($exitCode -ne 1 -or $output -notmatch 'Could not enumerate printers.*enumeration failed.*Access is denied' -or
                 $output -match 'Nothing to do|No target users|RESTARTED:|RETURNED:|DISASSOCIATED|IMPORTED') {

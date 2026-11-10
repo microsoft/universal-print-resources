@@ -13,12 +13,14 @@ Sysinternals PsExec installation (or substitute pwsh.exe for PowerShell 7).
 Use ShareId for one printer or AllUPPrinters for all, with your TenantId.
 Conversion skips invalid or unavailable users and continues eligible users.
 Missing profile paths or NTUSER.DAT files are warning-only skips for automatically
-discovered targets, as are unsupported hive locations (non-fixed drives or
-reparse paths); these count as incomplete for explicit UserSIDs. Query/access,
+discovered targets, but count as incomplete for explicit UserSIDs. Unsupported
+hive locations (non-fixed drives or reparse paths) count as failures in both modes,
+without blocking migration for eligible users. Query/access,
 invalid target/path, staging and migration errors remain failures in either mode.
 If eligible users are migrated and the per-system printer is disassociated,
-users skipped for unsupported hive locations lose that printer's per-system
-access and receive no per-user replacement, even when the run exits 0.
+users rejected for unsupported hive locations lose that printer's per-system
+access and receive no per-user replacement. The run exits 1 to report incomplete
+migration; review affected SIDs/reasons and provide their printer separately.
 Summary install counts exclude warning-only skips and report them separately.
 Exit 1 therefore does not imply nothing changed or that retrying is safe.
 If none are eligible, the per-system printer stays unchanged. Failures after
@@ -70,9 +72,8 @@ or device paths, to avoid SYSTEM authentication to remote profile hosts.
 Before preparing an unloaded profile and immediately before reg load, require a
 fixed drive and reject reparse points along the hive path. These checks are not
 compatible with junctions or volume mount points anywhere along the path,
-including C:\Users. Unsupported locations are skipped with a warning for
-automatically discovered targets, but fail explicit UserSIDs. Inspection/access
-errors remain failures in both modes. Skipping an unsupported profile does not
+including C:\Users. Unsupported locations and inspection/access errors count as
+failures in both modes, including WhatIf. Rejecting an unsupported profile does not
 block migration for eligible users: disassociation removes the shared printer
 for skipped users too, without installing their per-user replacement. Rerunning
 this script cannot recover those users from a removed per-system DAF entry;
@@ -551,8 +552,8 @@ function Mount-UserHive {
 
 function Assert-LocalProfileHivePath {
     param ([string]$Path)
-    # Policy rejections use NotSupportedException so preflight can warn/skip
-    # discovered targets without downgrading filesystem inspection/access errors.
+    # Distinguish unsupported locations from filesystem inspection/access errors;
+    # both are reported as target failures without blocking eligible users.
     $root = [IO.Path]::GetPathRoot($Path)
     if ($root -notmatch '^[A-Za-z]:\\$' -or
         [IO.DriveInfo]::new($root).DriveType -ne [IO.DriveType]::Fixed) {
@@ -997,8 +998,7 @@ function Convert-OnePrinter {
                         if (-not (Test-Path -LiteralPath $ntuser -PathType Leaf -ErrorAction Stop)) {
                             $ineligibleReason = "NTUSER.DAT is missing: $ntuser"
                         } else {
-                            try { Assert-LocalProfileHivePath -Path $ntuser }
-                            catch [NotSupportedException] { $ineligibleReason = $_.Exception.Message }
+                            Assert-LocalProfileHivePath -Path $ntuser
                         }
                     }
                 }
