@@ -21,7 +21,6 @@ public class BadgeManagement : IDisposable
 
     public bool UseV3BadgeApi { get; }
     public string ResourceName => "badge group";
-    public string ResourcePlural => "badge groups";
     public string ResourceIdLabel => "Group ID";
     public string SettlingNote =>
         "NOTE: Badge writes may need additional time to settle after group provisioning succeeds. " +
@@ -48,8 +47,8 @@ public class BadgeManagement : IDisposable
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
-        EnsureSuccess(response, responseBody, $"list {ResourcePlural}");
-        return ParseList(responseBody, ParseBadgeCollection, ResourcePlural);
+        EnsureSuccess(response, responseBody, "list badge groups");
+        return ParseList(responseBody, ParseBadgeCollection, "badge groups");
     }
 
     /// <summary>

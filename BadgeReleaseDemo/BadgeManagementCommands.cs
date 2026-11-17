@@ -38,7 +38,7 @@ public sealed class BadgeManagementCommands
         listCommand.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
             var collections = await client.ListBadgeCollectionsAsync(token);
-            ConsoleHelper.WriteInfo($"{client.ResourcePlural}: {collections.Count}");
+            ConsoleHelper.WriteInfo($"Badge groups: {collections.Count}");
             foreach (var collection in collections)
             {
                 ConsoleHelper.WriteKeyValue(client.ResourceIdLabel, collection.Id);
@@ -48,7 +48,7 @@ public sealed class BadgeManagementCommands
                     ConsoleHelper.WriteKeyValue("Created date/time", collection.CreatedDateTime);
                 }
             }
-            ConsoleHelper.WriteInfo($"Listing {client.ResourcePlural} fits in a single service response; pagination is not required.");
+            ConsoleHelper.WriteInfo("Listing badge groups fits in a single service response; pagination is not required.");
 
             return 0;
         }));
@@ -390,7 +390,7 @@ public sealed class BadgeManagementCommands
                 $"No {client.ResourceName} exists. Create one with 'badges groups create{(client.UseV3BadgeApi ? " --use-v3-badge-api" : "")}'."),
             1 => collections[0].Id,
             _ => throw new InvalidOperationException(
-                $"Multiple {client.ResourcePlural} exist. Specify --group-id with one of: {string.Join(", ", collections.Select(item => item.Id))}")
+                $"Multiple badge groups exist. Specify --group-id with one of: {string.Join(", ", collections.Select(item => item.Id))}")
         };
     }
 
