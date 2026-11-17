@@ -161,18 +161,18 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             // Step 4: Create badge group (if needed)
             // ═══════════════════════════════════════════════════════════
-            ConsoleHelper.WriteStep("🏷️", $"Creating {badgeMgmt.ResourceName}...");
+            ConsoleHelper.WriteStep("🏷️", "Creating badge group...");
             token = await auth.GetUserTokenAsync();
             var collectionResult = await badgeMgmt.CreateBadgeCollectionAsync(token);
             badgeCollectionId = collectionResult.Id;
             if (collectionResult.Created)
             {
-                ConsoleHelper.WriteSuccess($"The {badgeMgmt.ResourceName} provisioning completed (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteSuccess($"The badge group provisioning completed (ID: {badgeCollectionId}).");
                 ConsoleHelper.WriteWarning(badgeMgmt.SettlingNote);
             }
             else
             {
-                ConsoleHelper.WriteSuccess($"Using existing {badgeMgmt.ResourceName} (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteSuccess($"Using existing badge group (ID: {badgeCollectionId}).");
             }
 
             // ═══════════════════════════════════════════════════════════

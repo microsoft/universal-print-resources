@@ -59,8 +59,8 @@ public sealed class BadgeManagementCommands
             var result = await client.CreateBadgeCollectionAsync(token);
             ConsoleHelper.WriteSuccess(
                 result.Created
-                    ? $"The {client.ResourceName} provisioning completed."
-                    : $"Using existing {client.ResourceName}.");
+                    ? "The badge group provisioning completed."
+                    : "Using existing badge group.");
             ConsoleHelper.WriteKeyValue(client.ResourceIdLabel, result.Id);
             if (result.Created)
             {
@@ -85,20 +85,20 @@ public sealed class BadgeManagementCommands
                 token,
                 parseResult.GetValue(collectionIdOption));
             if (!parseResult.GetValue(forceOption) &&
-                !ConsoleHelper.PromptYesNo($"Delete {client.ResourceName} '{collectionId}'?"))
+                !ConsoleHelper.PromptYesNo($"Delete badge group '{collectionId}'?"))
             {
-                ConsoleHelper.WriteWarning($"The {client.ResourceName} deletion was cancelled.");
+                ConsoleHelper.WriteWarning("The badge group deletion was cancelled.");
                 return 0;
             }
 
             var deleted = await client.DeleteBadgeCollectionAsync(token, collectionId);
             if (!deleted)
             {
-                ConsoleHelper.WriteWarning($"The {client.ResourceName} '{collectionId}' was not found.");
+                ConsoleHelper.WriteWarning($"The badge group '{collectionId}' was not found.");
                 return 1;
             }
 
-            ConsoleHelper.WriteSuccess($"The {client.ResourceName} '{collectionId}' deletion was requested.");
+            ConsoleHelper.WriteSuccess($"The badge group '{collectionId}' deletion was requested.");
             return 0;
         }));
 
@@ -387,7 +387,7 @@ public sealed class BadgeManagementCommands
         return collections.Count switch
         {
             0 => throw new InvalidOperationException(
-                $"No {client.ResourceName} exists. Create one with 'badges groups create{(client.UseV3BadgeApi ? " --use-v3-badge-api" : "")}'."),
+                $"No badge group exists. Create one with 'badges groups create{(client.UseV3BadgeApi ? " --use-v3-badge-api" : "")}'."),
             1 => collections[0].Id,
             _ => throw new InvalidOperationException(
                 $"Multiple badge groups exist. Specify --group-id with one of: {string.Join(", ", collections.Select(item => item.Id))}")

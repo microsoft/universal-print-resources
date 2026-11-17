@@ -20,7 +20,6 @@ public class BadgeManagement : IDisposable
     private readonly HttpClient httpClient;
 
     public bool UseV3BadgeApi { get; }
-    public string ResourceName => "badge group";
     public string ResourceIdLabel => "Group ID";
     public string SettlingNote =>
         "NOTE: Badge writes may need additional time to settle after group provisioning succeeds. " +
@@ -72,7 +71,7 @@ public class BadgeManagement : IDisposable
 
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
-            ConsoleHelper.WriteInfo($"The {ResourceName} already exists (this is OK).");
+            ConsoleHelper.WriteInfo("The badge group already exists (this is OK).");
             return new BadgeCollectionCreationResult(
                 await GetBadgeCollectionIdAsync(accessToken),
                 Created: false);
@@ -80,14 +79,14 @@ public class BadgeManagement : IDisposable
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new HttpRequestException($"Failed to create {ResourceName}: {response.StatusCode} - {responseBody}", null, response.StatusCode);
+            throw new HttpRequestException($"Failed to create badge group: {response.StatusCode} - {responseBody}", null, response.StatusCode);
         }
         if (UseV3BadgeApi)
         {
             EnsureStatus(response, responseBody, HttpStatusCode.Accepted, "create badge group");
         }
 
-        ConsoleHelper.WriteInfo($"The {ResourceName} creation was initiated.");
+        ConsoleHelper.WriteInfo("The badge group creation was initiated.");
 
         // 202 Accepted: creation is a long-running operation — poll the operation to completion.
         if (response.StatusCode == HttpStatusCode.Accepted)
@@ -97,10 +96,10 @@ public class BadgeManagement : IDisposable
             if (string.IsNullOrEmpty(operationId))
             {
                 throw new InvalidOperationException(
-                    $"The {ResourceName} creation returned 202 Accepted without an operation ID to poll.");
+                    "The badge group creation returned 202 Accepted without an operation ID to poll.");
             }
 
-            ConsoleHelper.WriteProgress($"Waiting for {ResourceName} to be provisioned (this can take up to 10 minutes)...");
+            ConsoleHelper.WriteProgress("Waiting for badge group to be provisioned (this can take up to 10 minutes)...");
             var completedResourceId = await WaitForBadgeCollectionOperationAsync(accessToken, operationId);
 
             if (UseV3BadgeApi)
@@ -137,7 +136,7 @@ public class BadgeManagement : IDisposable
         var maxWait = TimeSpan.FromMinutes(10);
         var defaultDelay = TimeSpan.FromSeconds(5);
         var stopwatch = Stopwatch.StartNew();
-        ConsoleHelper.WriteInfo($"The {ResourceName} operation ID: {operationId}");
+        ConsoleHelper.WriteInfo($"The badge group operation ID: {operationId}");
 
         while (stopwatch.Elapsed < maxWait)
         {
@@ -151,21 +150,21 @@ public class BadgeManagement : IDisposable
             if (!response.IsSuccessStatusCode)
             {
                 throw new HttpRequestException(
-                    $"Failed to poll {ResourceName} operation: {response.StatusCode} - {responseBody}", null, response.StatusCode);
+                    $"Failed to poll badge group operation: {response.StatusCode} - {responseBody}", null, response.StatusCode);
             }
 
             var state = ParseOperationState(responseBody);
             var displayState = string.IsNullOrWhiteSpace(state) ? "unknown" : state;
-            ConsoleHelper.WriteInfo($"The {ResourceName} operation state: {displayState}");
+            ConsoleHelper.WriteInfo($"The badge group operation state: {displayState}");
 
             switch (state?.ToLowerInvariant())
             {
                 case "succeeded":
-                    ConsoleHelper.WriteSuccess($"The {ResourceName} provisioning completed.");
+                    ConsoleHelper.WriteSuccess("The badge group provisioning completed.");
                     return UseV3BadgeApi ? ParseBadgePrintOperation(responseBody).CollectionId : string.Empty;
                 case "failed":
                     throw new InvalidOperationException(
-                        $"The {ResourceName} provisioning failed: {responseBody}");
+                        $"The badge group provisioning failed: {responseBody}");
             }
 
             var remainingWait = maxWait - stopwatch.Elapsed;
@@ -180,11 +179,11 @@ public class BadgeManagement : IDisposable
                 remainingWait,
                 DateTimeOffset.UtcNow);
             ConsoleHelper.WriteProgress(
-                $"The {ResourceName} provisioning is still in progress; retrying in {delay.TotalSeconds:0.#}s...");
+                $"The badge group provisioning is still in progress; retrying in {delay.TotalSeconds:0.#}s...");
             await Task.Delay(delay);
         }
 
-        throw new TimeoutException($"Timed out waiting for {ResourceName} provisioning to complete.");
+        throw new TimeoutException("Timed out waiting for badge group provisioning to complete.");
     }
 
     internal static TimeSpan GetRetryDelay(
@@ -237,7 +236,7 @@ public class BadgeManagement : IDisposable
     private async Task<string> GetBadgeCollectionIdAsync(string accessToken)
     {
         var collectionId = await TryGetBadgeCollectionIdAsync(accessToken);
-        return collectionId ?? throw new InvalidOperationException($"No {ResourceName} ID was returned by the service.");
+        return collectionId ?? throw new InvalidOperationException("No badge group ID was returned by the service.");
     }
 
     private async Task<string?> TryGetBadgeCollectionIdAsync(string accessToken)
@@ -264,7 +263,7 @@ public class BadgeManagement : IDisposable
             return false;
         }
 
-        EnsureSuccess(response, responseBody, $"delete {ResourceName}");
+        EnsureSuccess(response, responseBody, "delete badge group");
         return true;
     }
 
@@ -466,7 +465,7 @@ public class BadgeManagement : IDisposable
                 id,
                 UseV3BadgeApi ? ReadNullableString(collection, "displayName") : null,
                 UseV3BadgeApi ? ReadNullableString(collection, "createdDateTime") : null)
-            : throw new InvalidOperationException($"The {ResourceName} response contained an empty ID.");
+            : throw new InvalidOperationException("The badge group response contained an empty ID.");
     }
 
     private BadgeMapping ParseBadgeMapping(JsonElement badge)
