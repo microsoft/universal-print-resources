@@ -24,28 +24,28 @@ public sealed class BadgeManagementCommands
     private Command CreateCommand()
     {
         var badgesCommand = new Command("badges", "Manage badge groups and mappings");
-        badgesCommand.Subcommands.Add(CreateCollectionsCommand());
+        badgesCommand.Subcommands.Add(CreateBadgeGroupsCommand());
         badgesCommand.Subcommands.Add(CreateMappingsCommand());
         return badgesCommand;
     }
 
-    private Command CreateCollectionsCommand()
+    private Command CreateBadgeGroupsCommand()
     {
-        var collectionsCommand = new Command("groups", "Manage badge groups");
-        collectionsCommand.Aliases.Add("collections");
+        var badgeGroupsCommand = new Command("groups", "Manage badge groups");
+        badgeGroupsCommand.Aliases.Add("collections");
 
         var listCommand = new Command("list", "List badge groups");
         listCommand.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
-            var collections = await client.ListBadgeCollectionsAsync(token);
-            ConsoleHelper.WriteInfo($"Badge groups: {collections.Count}");
-            foreach (var collection in collections)
+            var badgeGroups = await client.ListBadgeGroupsAsync(token);
+            ConsoleHelper.WriteInfo($"Badge groups: {badgeGroups.Count}");
+            foreach (var badgeGroup in badgeGroups)
             {
-                ConsoleHelper.WriteKeyValue(client.ResourceIdLabel, collection.Id);
+                ConsoleHelper.WriteKeyValue(client.ResourceIdLabel, badgeGroup.Id);
                 if (client.UseV3BadgeApi)
                 {
-                    ConsoleHelper.WriteKeyValue("Display name", collection.DisplayName);
-                    ConsoleHelper.WriteKeyValue("Created date/time", collection.CreatedDateTime);
+                    ConsoleHelper.WriteKeyValue("Display name", badgeGroup.DisplayName);
+                    ConsoleHelper.WriteKeyValue("Created date/time", badgeGroup.CreatedDateTime);
                 }
             }
             ConsoleHelper.WriteInfo("Listing badge groups fits in a single service response; pagination is not required.");
@@ -56,7 +56,7 @@ public sealed class BadgeManagementCommands
         var createCommand = new Command("create", "Create a badge group if one does not exist");
         createCommand.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
-            var result = await client.CreateBadgeCollectionAsync(token);
+            var result = await client.CreateBadgeGroupAsync(token);
             ConsoleHelper.WriteSuccess(
                 result.Created
                     ? "The badge group provisioning completed."
@@ -70,42 +70,42 @@ public sealed class BadgeManagementCommands
             return 0;
         }));
 
-        var collectionIdOption = CreateCollectionIdOption();
+        var badgeGroupIdOption = CreateBadgeGroupIdOption();
         var forceOption = new Option<bool>("--force")
         {
             Description = "Delete without prompting for confirmation"
         };
         var deleteCommand = new Command("delete", "Delete a badge group");
-        deleteCommand.Options.Add(collectionIdOption);
+        deleteCommand.Options.Add(badgeGroupIdOption);
         deleteCommand.Options.Add(forceOption);
         deleteCommand.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
-            var collectionId = await ResolveCollectionIdAsync(
+            var badgeGroupId = await ResolveBadgeGroupIdAsync(
                 client,
                 token,
-                parseResult.GetValue(collectionIdOption));
+                parseResult.GetValue(badgeGroupIdOption));
             if (!parseResult.GetValue(forceOption) &&
-                !ConsoleHelper.PromptYesNo($"Delete badge group '{collectionId}'?"))
+                !ConsoleHelper.PromptYesNo($"Delete badge group '{badgeGroupId}'?"))
             {
                 ConsoleHelper.WriteWarning("The badge group deletion was cancelled.");
                 return 0;
             }
 
-            var deleted = await client.DeleteBadgeCollectionAsync(token, collectionId);
+            var deleted = await client.DeleteBadgeGroupAsync(token, badgeGroupId);
             if (!deleted)
             {
-                ConsoleHelper.WriteWarning($"The badge group '{collectionId}' was not found.");
+                ConsoleHelper.WriteWarning($"The badge group '{badgeGroupId}' was not found.");
                 return 1;
             }
 
-            ConsoleHelper.WriteSuccess($"The badge group '{collectionId}' deletion was requested.");
+            ConsoleHelper.WriteSuccess($"The badge group '{badgeGroupId}' deletion was requested.");
             return 0;
         }));
 
-        collectionsCommand.Subcommands.Add(listCommand);
-        collectionsCommand.Subcommands.Add(createCommand);
-        collectionsCommand.Subcommands.Add(deleteCommand);
-        return collectionsCommand;
+        badgeGroupsCommand.Subcommands.Add(listCommand);
+        badgeGroupsCommand.Subcommands.Add(createCommand);
+        badgeGroupsCommand.Subcommands.Add(deleteCommand);
+        return badgeGroupsCommand;
     }
 
     private Command CreateMappingsCommand()
@@ -121,16 +121,16 @@ public sealed class BadgeManagementCommands
 
     private Command CreateListMappingsCommand()
     {
-        var collectionIdOption = CreateCollectionIdOption();
+        var badgeGroupIdOption = CreateBadgeGroupIdOption();
         var command = new Command("list", "List badge mappings (requires service support; available in V3)");
-        command.Options.Add(collectionIdOption);
+        command.Options.Add(badgeGroupIdOption);
         command.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
-            var collectionId = await ResolveCollectionIdAsync(
+            var badgeGroupId = await ResolveBadgeGroupIdAsync(
                 client,
                 token,
-                parseResult.GetValue(collectionIdOption));
-            var result = await client.ListBadgesAsync(token, collectionId);
+                parseResult.GetValue(badgeGroupIdOption));
+            var result = await client.ListBadgesAsync(token, badgeGroupId);
             if (!result.IsSupported)
             {
                 ConsoleHelper.WriteWarning("The service does not implement badge mapping listing yet.");
@@ -150,20 +150,20 @@ public sealed class BadgeManagementCommands
 
     private Command CreateGetMappingCommand()
     {
-        var collectionIdOption = CreateCollectionIdOption();
+        var badgeGroupIdOption = CreateBadgeGroupIdOption();
         var badgeIdOption = CreateRequiredOption("--badge-id", "Badge ID to retrieve");
         var command = new Command("get", "Get a badge mapping");
-        command.Options.Add(collectionIdOption);
+        command.Options.Add(badgeGroupIdOption);
         command.Options.Add(badgeIdOption);
         AddNonEmptyValidator(command, badgeIdOption);
         command.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
-            var collectionId = await ResolveCollectionIdAsync(
+            var badgeGroupId = await ResolveBadgeGroupIdAsync(
                 client,
                 token,
-                parseResult.GetValue(collectionIdOption));
+                parseResult.GetValue(badgeGroupIdOption));
             var badgeId = parseResult.GetRequiredValue(badgeIdOption);
-            var badge = await client.GetBadgeAsync(token, collectionId, badgeId);
+            var badge = await client.GetBadgeAsync(token, badgeGroupId, badgeId);
             if (badge == null)
             {
                 ConsoleHelper.WriteWarning($"Badge '{badgeId}' was not found.");
@@ -178,12 +178,12 @@ public sealed class BadgeManagementCommands
 
     private Command CreateAddMappingCommand()
     {
-        var collectionIdOption = CreateCollectionIdOption();
+        var badgeGroupIdOption = CreateBadgeGroupIdOption();
         var badgeIdOption = CreateRequiredOption("--badge-id", "Badge ID to create");
         var upnOption = CreateRequiredOption("--upn", "User principal name for the badge");
         var userIdOption = CreateUserIdOption();
         var command = new Command("create", "Create a badge mapping");
-        command.Options.Add(collectionIdOption);
+        command.Options.Add(badgeGroupIdOption);
         command.Options.Add(badgeIdOption);
         command.Options.Add(upnOption);
         command.Options.Add(userIdOption);
@@ -191,13 +191,13 @@ public sealed class BadgeManagementCommands
         AddNonEmptyValidator(command, upnOption);
         command.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
-            var collectionId = await ResolveCollectionIdAsync(
+            var badgeGroupId = await ResolveBadgeGroupIdAsync(
                 client,
                 token,
-                parseResult.GetValue(collectionIdOption));
+                parseResult.GetValue(badgeGroupIdOption));
             var badge = await client.AddBadgeAsync(
                 token,
-                collectionId,
+                badgeGroupId,
                 parseResult.GetRequiredValue(badgeIdOption),
                 parseResult.GetRequiredValue(upnOption),
                 parseResult.GetValue(userIdOption));
@@ -210,12 +210,12 @@ public sealed class BadgeManagementCommands
 
     private Command CreateUpdateMappingCommand()
     {
-        var collectionIdOption = CreateCollectionIdOption();
+        var badgeGroupIdOption = CreateBadgeGroupIdOption();
         var badgeIdOption = CreateRequiredOption("--badge-id", "Badge ID to update");
         var upnOption = CreateRequiredOption("--upn", "User principal name for the updated badge mapping");
         var userIdOption = CreateUserIdOption();
         var command = new Command("update", "Update a badge mapping");
-        command.Options.Add(collectionIdOption);
+        command.Options.Add(badgeGroupIdOption);
         command.Options.Add(badgeIdOption);
         command.Options.Add(upnOption);
         command.Options.Add(userIdOption);
@@ -227,13 +227,13 @@ public sealed class BadgeManagementCommands
 
             return await RunAuthenticatedAsync(parseResult, async (client, token) =>
             {
-                var collectionId = await ResolveCollectionIdAsync(
+                var badgeGroupId = await ResolveBadgeGroupIdAsync(
                     client,
                     token,
-                    parseResult.GetValue(collectionIdOption));
+                    parseResult.GetValue(badgeGroupIdOption));
                 var badge = await client.UpdateBadgeAsync(
                     token,
-                    collectionId,
+                    badgeGroupId,
                     parseResult.GetRequiredValue(badgeIdOption),
                     upn,
                     userId);
@@ -247,20 +247,20 @@ public sealed class BadgeManagementCommands
 
     private Command CreateDeleteMappingCommand()
     {
-        var collectionIdOption = CreateCollectionIdOption();
+        var badgeGroupIdOption = CreateBadgeGroupIdOption();
         var badgeIdOption = CreateRequiredOption("--badge-id", "Badge ID to delete");
         var command = new Command("delete", "Delete a badge mapping");
-        command.Options.Add(collectionIdOption);
+        command.Options.Add(badgeGroupIdOption);
         command.Options.Add(badgeIdOption);
         AddNonEmptyValidator(command, badgeIdOption);
         command.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
-            var collectionId = await ResolveCollectionIdAsync(
+            var badgeGroupId = await ResolveBadgeGroupIdAsync(
                 client,
                 token,
-                parseResult.GetValue(collectionIdOption));
+                parseResult.GetValue(badgeGroupIdOption));
             var badgeId = parseResult.GetRequiredValue(badgeIdOption);
-            var deleted = await client.DeleteBadgeAsync(token, collectionId, badgeId);
+            var deleted = await client.DeleteBadgeAsync(token, badgeGroupId, badgeId);
             if (!deleted)
             {
                 ConsoleHelper.WriteWarning($"Badge '{badgeId}' was not found.");
@@ -273,7 +273,7 @@ public sealed class BadgeManagementCommands
         return command;
     }
 
-    private static Option<string?> CreateCollectionIdOption() =>
+    private static Option<string?> CreateBadgeGroupIdOption() =>
         new("--group-id", "--collection-id")
         {
             Description = "Badge group ID; omit only when the tenant has exactly one group"
@@ -373,24 +373,24 @@ public sealed class BadgeManagementCommands
         }
     }
 
-    private static async Task<string> ResolveCollectionIdAsync(
+    private static async Task<string> ResolveBadgeGroupIdAsync(
         BadgeManagement client,
         string accessToken,
-        string? collectionId)
+        string? badgeGroupId)
     {
-        if (!string.IsNullOrWhiteSpace(collectionId))
+        if (!string.IsNullOrWhiteSpace(badgeGroupId))
         {
-            return collectionId;
+            return badgeGroupId;
         }
 
-        var collections = await client.ListBadgeCollectionsAsync(accessToken);
-        return collections.Count switch
+        var badgeGroups = await client.ListBadgeGroupsAsync(accessToken);
+        return badgeGroups.Count switch
         {
             0 => throw new InvalidOperationException(
                 $"No badge group exists. Create one with 'badges groups create{(client.UseV3BadgeApi ? " --use-v3-badge-api" : "")}'."),
-            1 => collections[0].Id,
+            1 => badgeGroups[0].Id,
             _ => throw new InvalidOperationException(
-                $"Multiple badge groups exist. Specify --group-id with one of: {string.Join(", ", collections.Select(item => item.Id))}")
+                $"Multiple badge groups exist. Specify --group-id with one of: {string.Join(", ", badgeGroups.Select(item => item.Id))}")
         };
     }
 

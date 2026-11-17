@@ -40,14 +40,14 @@ public class BadgeManagement : IDisposable
 
     public void Dispose() => httpClient.Dispose();
 
-    public async Task<IReadOnlyList<BadgeCollection>> ListBadgeCollectionsAsync(string accessToken)
+    public async Task<IReadOnlyList<BadgeGroup>> ListBadgeGroupsAsync(string accessToken)
     {
         using var request = CreateRequest(HttpMethod.Get, ResourceUrl, accessToken);
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         EnsureSuccess(response, responseBody, "list badge groups");
-        return ParseList(responseBody, ParseBadgeCollection, "badge groups");
+        return ParseList(responseBody, ParseBadgeGroup, "badge groups");
     }
 
     /// <summary>
@@ -62,7 +62,7 @@ public class BadgeManagement : IDisposable
     /// GET /print/operations/{operationId} until the operation state is 'succeeded' before the
     /// group can accept badges — otherwise adding a badge fails with 404.
     /// </remarks>
-    public async Task<BadgeCollectionCreationResult> CreateBadgeCollectionAsync(string accessToken)
+    public async Task<BadgeGroupCreationResult> CreateBadgeGroupAsync(string accessToken)
     {
         using var request = CreateRequest(HttpMethod.Post, ResourceUrl, accessToken);
         request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
@@ -72,8 +72,8 @@ public class BadgeManagement : IDisposable
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
             ConsoleHelper.WriteInfo("The badge group already exists (this is OK).");
-            return new BadgeCollectionCreationResult(
-                await GetBadgeCollectionIdAsync(accessToken),
+            return new BadgeGroupCreationResult(
+                await GetBadgeGroupIdAsync(accessToken),
                 Created: false);
         }
 
@@ -91,7 +91,7 @@ public class BadgeManagement : IDisposable
         // 202 Accepted: creation is a long-running operation — poll the operation to completion.
         if (response.StatusCode == HttpStatusCode.Accepted)
         {
-            var (operationId, collectionId) = ParseBadgePrintOperation(responseBody);
+            var (operationId, badgeGroupId) = ParseBadgePrintOperation(responseBody);
 
             if (string.IsNullOrEmpty(operationId))
             {
@@ -100,30 +100,30 @@ public class BadgeManagement : IDisposable
             }
 
             ConsoleHelper.WriteProgress("Waiting for badge group to be provisioned (this can take up to 10 minutes)...");
-            var completedResourceId = await WaitForBadgeCollectionOperationAsync(accessToken, operationId);
+            var completedResourceId = await WaitForBadgeGroupOperationAsync(accessToken, operationId);
 
             if (UseV3BadgeApi)
             {
-                var groupId = !string.IsNullOrWhiteSpace(completedResourceId) ? completedResourceId : collectionId;
+                var groupId = !string.IsNullOrWhiteSpace(completedResourceId) ? completedResourceId : badgeGroupId;
                 if (string.IsNullOrWhiteSpace(groupId))
                 {
                     throw new InvalidOperationException(
                         "Badge group creation succeeded without printBadgeGroup.id.");
                 }
 
-                return new BadgeCollectionCreationResult(groupId, Created: true);
+                return new BadgeGroupCreationResult(groupId, Created: true);
             }
 
-            // The collection ID is returned with the operation; fall back to a list lookup if absent.
-            return new BadgeCollectionCreationResult(
-                !string.IsNullOrEmpty(collectionId)
-                    ? collectionId
-                    : await GetBadgeCollectionIdAsync(accessToken),
+            // The group ID is returned with the operation; fall back to a list lookup if absent.
+            return new BadgeGroupCreationResult(
+                !string.IsNullOrEmpty(badgeGroupId)
+                    ? badgeGroupId
+                    : await GetBadgeGroupIdAsync(accessToken),
                 Created: true);
         }
 
-        return new BadgeCollectionCreationResult(
-            await GetBadgeCollectionIdAsync(accessToken),
+        return new BadgeGroupCreationResult(
+            await GetBadgeGroupIdAsync(accessToken),
             Created: true);
     }
 
@@ -131,7 +131,7 @@ public class BadgeManagement : IDisposable
     /// Polls GET /print/operations/{operationId} until the badge group provisioning
     /// operation reaches a terminal state, honoring the service's Retry-After hint.
     /// </summary>
-    private async Task<string> WaitForBadgeCollectionOperationAsync(string accessToken, string operationId)
+    private async Task<string> WaitForBadgeGroupOperationAsync(string accessToken, string operationId)
     {
         var maxWait = TimeSpan.FromMinutes(10);
         var defaultDelay = TimeSpan.FromSeconds(5);
@@ -161,7 +161,7 @@ public class BadgeManagement : IDisposable
             {
                 case "succeeded":
                     ConsoleHelper.WriteSuccess("The badge group provisioning completed.");
-                    return UseV3BadgeApi ? ParseBadgePrintOperation(responseBody).CollectionId : string.Empty;
+                    return UseV3BadgeApi ? ParseBadgePrintOperation(responseBody).BadgeGroupId : string.Empty;
                 case "failed":
                     throw new InvalidOperationException(
                         $"The badge group provisioning failed: {responseBody}");
@@ -198,7 +198,7 @@ public class BadgeManagement : IDisposable
         return requestedDelay < remainingWait ? requestedDelay : remainingWait;
     }
 
-    private (string OperationId, string CollectionId) ParseBadgePrintOperation(string responseBody)
+    private (string OperationId, string BadgeGroupId) ParseBadgePrintOperation(string responseBody)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
         {
@@ -207,13 +207,13 @@ public class BadgeManagement : IDisposable
 
         var doc = JsonSerializer.Deserialize<JsonElement>(responseBody);
         var operationId = doc.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? string.Empty : string.Empty;
-        var collectionId = UseV3BadgeApi
+        var badgeGroupId = UseV3BadgeApi
             ? doc.TryGetProperty("printBadgeGroup", out var group) && group.ValueKind == JsonValueKind.Object
                 ? ReadNullableString(group, "id") ?? string.Empty
                 : string.Empty
             : ReadNullableString(doc, "collectionId") ?? string.Empty;
 
-        return (operationId, collectionId);
+        return (operationId, badgeGroupId);
     }
 
     private static string ParseOperationState(string responseBody)
@@ -233,27 +233,27 @@ public class BadgeManagement : IDisposable
         return string.Empty;
     }
 
-    private async Task<string> GetBadgeCollectionIdAsync(string accessToken)
+    private async Task<string> GetBadgeGroupIdAsync(string accessToken)
     {
-        var collectionId = await TryGetBadgeCollectionIdAsync(accessToken);
-        return collectionId ?? throw new InvalidOperationException("No badge group ID was returned by the service.");
+        var badgeGroupId = await TryGetBadgeGroupIdAsync(accessToken);
+        return badgeGroupId ?? throw new InvalidOperationException("No badge group ID was returned by the service.");
     }
 
-    private async Task<string?> TryGetBadgeCollectionIdAsync(string accessToken)
+    private async Task<string?> TryGetBadgeGroupIdAsync(string accessToken)
     {
-        var collections = await ListBadgeCollectionsAsync(accessToken);
-        if (UseV3BadgeApi && collections.Count != 1)
+        var badgeGroups = await ListBadgeGroupsAsync(accessToken);
+        if (UseV3BadgeApi && badgeGroups.Count != 1)
         {
             throw new InvalidOperationException("Expected exactly one badge group when resolving the creation result.");
         }
-        return collections.FirstOrDefault()?.Id;
+        return badgeGroups.FirstOrDefault()?.Id;
     }
 
-    public async Task<bool> DeleteBadgeCollectionAsync(string accessToken, string collectionId)
+    public async Task<bool> DeleteBadgeGroupAsync(string accessToken, string badgeGroupId)
     {
         using var request = CreateRequest(
             HttpMethod.Delete,
-            $"{ResourceUrl}/{Uri.EscapeDataString(collectionId)}",
+            $"{ResourceUrl}/{Uri.EscapeDataString(badgeGroupId)}",
             accessToken);
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
@@ -272,7 +272,7 @@ public class BadgeManagement : IDisposable
     /// </summary>
     public async Task<BadgeMapping> AddBadgeAsync(
         string accessToken,
-        string collectionId,
+        string badgeGroupId,
         string badgeId,
         string upn,
         string? userId = null)
@@ -296,7 +296,7 @@ public class BadgeManagement : IDisposable
         var json = JsonSerializer.Serialize(requestBody);
         using var request = CreateRequest(
             HttpMethod.Post,
-            $"{ResourceUrl}/{Uri.EscapeDataString(collectionId)}/badges",
+            $"{ResourceUrl}/{Uri.EscapeDataString(badgeGroupId)}/badges",
             accessToken);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
         using var response = await httpClient.SendAsync(request);
@@ -312,11 +312,11 @@ public class BadgeManagement : IDisposable
         return ParseBadgeMapping(JsonSerializer.Deserialize<JsonElement>(responseBody));
     }
 
-    public async Task<BadgeMappingListResult> ListBadgesAsync(string accessToken, string collectionId)
+    public async Task<BadgeMappingListResult> ListBadgesAsync(string accessToken, string badgeGroupId)
     {
         using var request = CreateRequest(
             HttpMethod.Get,
-            $"{ResourceUrl}/{Uri.EscapeDataString(collectionId)}/badges",
+            $"{ResourceUrl}/{Uri.EscapeDataString(badgeGroupId)}/badges",
             accessToken);
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
@@ -332,9 +332,9 @@ public class BadgeManagement : IDisposable
             ParseList(responseBody, ParseBadgeMapping, "badges"));
     }
 
-    public async Task<BadgeMapping?> GetBadgeAsync(string accessToken, string collectionId, string badgeId)
+    public async Task<BadgeMapping?> GetBadgeAsync(string accessToken, string badgeGroupId, string badgeId)
     {
-        using var request = CreateBadgeItemRequest(HttpMethod.Get, accessToken, collectionId, badgeId);
+        using var request = CreateBadgeItemRequest(HttpMethod.Get, accessToken, badgeGroupId, badgeId);
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
@@ -349,7 +349,7 @@ public class BadgeManagement : IDisposable
 
     public async Task<BadgeMapping> UpdateBadgeAsync(
         string accessToken,
-        string collectionId,
+        string badgeGroupId,
         string badgeId,
         string upn,
         string? userId)
@@ -369,7 +369,7 @@ public class BadgeManagement : IDisposable
             requestBody["userId"] = userId;
         }
 
-        using var request = CreateBadgeItemRequest(HttpMethod.Patch, accessToken, collectionId, badgeId);
+        using var request = CreateBadgeItemRequest(HttpMethod.Patch, accessToken, badgeGroupId, badgeId);
         request.Content = new StringContent(
             JsonSerializer.Serialize(requestBody),
             Encoding.UTF8,
@@ -384,9 +384,9 @@ public class BadgeManagement : IDisposable
     /// <summary>
     /// Deletes a badge from the group.
     /// </summary>
-    public async Task<bool> DeleteBadgeAsync(string accessToken, string collectionId, string badgeId)
+    public async Task<bool> DeleteBadgeAsync(string accessToken, string badgeGroupId, string badgeId)
     {
-        using var request = CreateBadgeItemRequest(HttpMethod.Delete, accessToken, collectionId, badgeId);
+        using var request = CreateBadgeItemRequest(HttpMethod.Delete, accessToken, badgeGroupId, badgeId);
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
@@ -402,11 +402,11 @@ public class BadgeManagement : IDisposable
     private HttpRequestMessage CreateBadgeItemRequest(
         HttpMethod method,
         string accessToken,
-        string collectionId,
+        string badgeGroupId,
         string badgeId) =>
         CreateRequest(
             method,
-            $"{ResourceUrl}/{Uri.EscapeDataString(collectionId)}/badges/{Uri.EscapeDataString(badgeId)}",
+            $"{ResourceUrl}/{Uri.EscapeDataString(badgeGroupId)}/badges/{Uri.EscapeDataString(badgeId)}",
             accessToken);
 
     private static HttpRequestMessage CreateRequest(HttpMethod method, string requestUri, string accessToken)
@@ -457,14 +457,14 @@ public class BadgeManagement : IDisposable
         return items.EnumerateArray().Select(parseItem).ToArray();
     }
 
-    private BadgeCollection ParseBadgeCollection(JsonElement collection)
+    private BadgeGroup ParseBadgeGroup(JsonElement badgeGroup)
     {
-        var id = collection.GetProperty("id").GetString();
+        var id = badgeGroup.GetProperty("id").GetString();
         return !string.IsNullOrWhiteSpace(id)
-            ? new BadgeCollection(
+            ? new BadgeGroup(
                 id,
-                UseV3BadgeApi ? ReadNullableString(collection, "displayName") : null,
-                UseV3BadgeApi ? ReadNullableString(collection, "createdDateTime") : null)
+                UseV3BadgeApi ? ReadNullableString(badgeGroup, "displayName") : null,
+                UseV3BadgeApi ? ReadNullableString(badgeGroup, "createdDateTime") : null)
             : throw new InvalidOperationException("The badge group response contained an empty ID.");
     }
 
@@ -497,9 +497,9 @@ public class BadgeManagement : IDisposable
             : null;
 }
 
-public sealed record BadgeCollection(string Id, string? DisplayName = null, string? CreatedDateTime = null);
+public sealed record BadgeGroup(string Id, string? DisplayName = null, string? CreatedDateTime = null);
 
-public sealed record BadgeCollectionCreationResult(string Id, bool Created);
+public sealed record BadgeGroupCreationResult(string Id, bool Created);
 
 public sealed record BadgeMapping(
     string Id, string? Upn, string? UserId, string? PhysicalBadgeId = null, string? CreatedDateTime = null);

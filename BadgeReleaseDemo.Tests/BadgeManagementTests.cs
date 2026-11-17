@@ -29,7 +29,7 @@ public class BadgeManagementTests
         var retrieved = await client.GetBadgeAsync("token", "group/1", "badge/1");
         var listed = await client.ListBadgesAsync("token", "group/1");
         Assert.True(await client.DeleteBadgeAsync("token", "group/1", "badge/1"));
-        Assert.True(await client.DeleteBadgeCollectionAsync("token", "group/1"));
+        Assert.True(await client.DeleteBadgeGroupAsync("token", "group/1"));
 
         Assert.Equal(created, updated);
         Assert.Equal(created, retrieved);
@@ -78,7 +78,7 @@ public class BadgeManagementTests
         });
         using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
 
-        var result = await client.CreateBadgeCollectionAsync("token");
+        var result = await client.CreateBadgeGroupAsync("token");
 
         Assert.True(result.Created);
         Assert.Equal("group-1", result.Id);
@@ -98,7 +98,7 @@ public class BadgeManagementTests
                     : """{"status":{"state":"succeeded"},"printBadgeGroup":null}"""));
         using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.CreateBadgeCollectionAsync("token"));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.CreateBadgeGroupAsync("token"));
 
         Assert.Contains("printBadgeGroup.id", error.Message);
         Assert.Equal(2, handler.Requests.Count);
@@ -126,11 +126,11 @@ public class BadgeManagementTests
 
         if (succeeds)
         {
-            Assert.Equal("group-1", (await client.CreateBadgeCollectionAsync("token")).Id);
+            Assert.Equal("group-1", (await client.CreateBadgeGroupAsync("token")).Id);
         }
         else
         {
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.CreateBadgeCollectionAsync("token"));
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.CreateBadgeGroupAsync("token"));
             Assert.Contains("Provisioning result", error.Message);
         }
 
@@ -148,7 +148,7 @@ public class BadgeManagementTests
                 : """{"@odata.type":"#microsoft.graph.printBadge","id":"badge-1","userPrincipalName":null,"userId":null,"physicalBadgeId":null,"createdDateTime":null,"user":null}"""));
         using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
 
-        var group = Assert.Single(await client.ListBadgeCollectionsAsync("token"));
+        var group = Assert.Single(await client.ListBadgeGroupsAsync("token"));
         var badge = await client.GetBadgeAsync("token", group.Id, "badge-1");
 
         Assert.Equal("group-1", group.Id);
@@ -185,7 +185,7 @@ public class BadgeManagementTests
         var handler = new RecordingHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.NotImplemented));
         using var client = new BadgeManagement("https://graph.example/v1.0", handler);
 
-        Assert.False((await client.ListBadgesAsync("token", "collection-1")).IsSupported);
+        Assert.False((await client.ListBadgesAsync("token", "group-1")).IsSupported);
     }
 
     [Theory]
@@ -203,13 +203,13 @@ public class BadgeManagementTests
     }
 
     [Fact]
-    public async Task CreateBadgeCollectionAsync_AcceptsCaseInsensitiveSucceededState()
+    public async Task CreateBadgeGroupAsync_AcceptsCaseInsensitiveSucceededState()
     {
         var handler = new RecordingHttpMessageHandler((_, call) => call switch
         {
             0 => RecordingHttpMessageHandler.JsonResponse(
                 HttpStatusCode.Accepted,
-                """{"id":"operation-1","collectionId":"collection-1"}"""),
+                """{"id":"operation-1","collectionId":"group-1"}"""),
             1 => RecordingHttpMessageHandler.JsonResponse(
                 HttpStatusCode.OK,
                 """{"status":{"state":"SuCcEeDeD"}}"""),
@@ -217,9 +217,9 @@ public class BadgeManagementTests
         });
         using var client = new BadgeManagement("https://graph.example/v1.0", handler);
 
-        var result = await client.CreateBadgeCollectionAsync("access-token");
+        var result = await client.CreateBadgeGroupAsync("access-token");
 
-        Assert.Equal("collection-1", result.Id);
+        Assert.Equal("group-1", result.Id);
         Assert.True(result.Created);
         Assert.Equal(2, handler.Requests.Count);
         Assert.Equal(
@@ -230,21 +230,21 @@ public class BadgeManagementTests
     [Theory]
     [InlineData(false, "badgeCollections")]
     [InlineData(true, "badgeGroups")]
-    public async Task CreateBadgeCollectionAsync_ReportsExistingCollection(bool useV3, string resource)
+    public async Task CreateBadgeGroupAsync_ReportsExistingBadgeGroup(bool useV3, string resource)
     {
         var handler = new RecordingHttpMessageHandler((_, call) => call switch
         {
             0 => new HttpResponseMessage(HttpStatusCode.Conflict),
             1 => RecordingHttpMessageHandler.JsonResponse(
                 HttpStatusCode.OK,
-                """{"value":[{"id":"existing-collection"}]}"""),
+                """{"value":[{"id":"existing-group"}]}"""),
             _ => throw new InvalidOperationException("Unexpected request.")
         });
         using var client = new BadgeManagement("https://graph.example/v1.0", handler, useV3);
 
-        var result = await client.CreateBadgeCollectionAsync("access-token");
+        var result = await client.CreateBadgeGroupAsync("access-token");
 
-        Assert.Equal("existing-collection", result.Id);
+        Assert.Equal("existing-group", result.Id);
         Assert.False(result.Created);
         Assert.All(handler.Requests, request =>
             Assert.Equal($"https://graph.example/v1.0/print/{resource}", request.Uri));
@@ -260,7 +260,7 @@ public class BadgeManagementTests
         var exception = await Assert.ThrowsAsync<ArgumentException>(() =>
             client.UpdateBadgeAsync(
                 "access-token",
-                "collection-1",
+                "group-1",
                 "badge-1",
                 null!,
                 "user-1"));
@@ -280,7 +280,7 @@ public class BadgeManagementTests
 
         await client.UpdateBadgeAsync(
             "access-token",
-            "collection-1",
+            "group-1",
             "badge-1",
             "user@contoso.com",
             "user-1");

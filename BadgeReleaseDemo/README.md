@@ -191,7 +191,7 @@ dotnet run -- badges mappings delete --group-id <group-id> --badge-id <badge-id>
 ```
 
 `--group-id` may be omitted when the tenant has exactly one badge group.
-When zero or multiple collections exist, the command reports the available next step
+When zero or multiple groups exist, the command reports the available next step
 instead of selecting a group implicitly. Group deletion prompts for
 confirmation unless `--force` is specified.
 

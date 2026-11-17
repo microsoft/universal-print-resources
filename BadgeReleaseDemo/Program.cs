@@ -116,7 +116,7 @@ public class Program
 
         string printerId = string.Empty;
         string shareId = string.Empty;
-        string badgeCollectionId = string.Empty;
+        string badgeGroupId = string.Empty;
         string createdBadgeId = string.Empty;
         string? savedDocumentPath = null;
 
@@ -163,16 +163,16 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", "Creating badge group...");
             token = await auth.GetUserTokenAsync();
-            var collectionResult = await badgeMgmt.CreateBadgeCollectionAsync(token);
-            badgeCollectionId = collectionResult.Id;
-            if (collectionResult.Created)
+            var badgeGroupResult = await badgeMgmt.CreateBadgeGroupAsync(token);
+            badgeGroupId = badgeGroupResult.Id;
+            if (badgeGroupResult.Created)
             {
-                ConsoleHelper.WriteSuccess($"The badge group provisioning completed (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteSuccess($"The badge group provisioning completed (ID: {badgeGroupId}).");
                 ConsoleHelper.WriteWarning(badgeMgmt.SettlingNote);
             }
             else
             {
-                ConsoleHelper.WriteSuccess($"Using existing badge group (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteSuccess($"Using existing badge group (ID: {badgeGroupId}).");
             }
 
             // ═══════════════════════════════════════════════════════════
@@ -193,7 +193,7 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", $"Adding badge '{badgeId}' → {auth.UserUpn}");
             token = await auth.GetUserTokenAsync();
-            await badgeMgmt.AddBadgeAsync(token, badgeCollectionId, badgeId, auth.UserUpn);
+            await badgeMgmt.AddBadgeAsync(token, badgeGroupId, badgeId, auth.UserUpn);
             createdBadgeId = badgeId;
             ConsoleHelper.WriteSuccess($"Badge '{badgeId}' mapped to {auth.UserUpn}.");
 
@@ -522,7 +522,7 @@ public class Program
             {
                 ConsoleHelper.WriteHeader("🧹 Cleaning up demo resources...");
 
-                if (!string.IsNullOrEmpty(createdBadgeId) && !string.IsNullOrEmpty(badgeCollectionId))
+                if (!string.IsNullOrEmpty(createdBadgeId) && !string.IsNullOrEmpty(badgeGroupId))
                 {
                     try
                     {
@@ -530,7 +530,7 @@ public class Program
                         var printToken = await auth.GetUserTokenAsync();
                         var badgeDeleted = await badgeMgmt.DeleteBadgeAsync(
                             printToken,
-                            badgeCollectionId,
+                            badgeGroupId,
                             createdBadgeId);
                         if (badgeDeleted)
                         {
