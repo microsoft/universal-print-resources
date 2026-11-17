@@ -19,7 +19,7 @@ namespace BadgeReleaseDemo;
 ///   1. Sign in as Printer Admin
 ///   2. Register a virtual printer
 ///   3. Share the printer (with jobs held for secure release)
-///   4. Create a badge collection and add a badge
+///   4. Create a badge group and add a badge
 ///   5. Advertise badge release support
 ///   6. Submit a PDF print job and verify it remains held
 ///   7. Resolve the badge, verify the job becomes fetchable, fetch it, and complete it
@@ -159,7 +159,7 @@ public class Program
             ConsoleHelper.WriteKeyValue("Share ID", shareId);
 
             // ═══════════════════════════════════════════════════════════
-            // Step 4: Create badge collection (if needed)
+            // Step 4: Create badge group (if needed)
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", $"Creating {badgeMgmt.ResourceName}...");
             token = await auth.GetUserTokenAsync();

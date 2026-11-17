@@ -23,7 +23,7 @@ public sealed class BadgeManagementCommands
 
     private Command CreateCommand()
     {
-        var badgesCommand = new Command("badges", "Manage badge collections (groups in V3) and mappings");
+        var badgesCommand = new Command("badges", "Manage badge groups and mappings");
         badgesCommand.Subcommands.Add(CreateCollectionsCommand());
         badgesCommand.Subcommands.Add(CreateMappingsCommand());
         return badgesCommand;
@@ -31,10 +31,10 @@ public sealed class BadgeManagementCommands
 
     private Command CreateCollectionsCommand()
     {
-        var collectionsCommand = new Command("collections", "Manage badge collections (groups with --use-v3-badge-api)");
-        collectionsCommand.Aliases.Add("groups");
+        var collectionsCommand = new Command("groups", "Manage badge groups");
+        collectionsCommand.Aliases.Add("collections");
 
-        var listCommand = new Command("list", "List badge collections or V3 groups");
+        var listCommand = new Command("list", "List badge groups");
         listCommand.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
             var collections = await client.ListBadgeCollectionsAsync(token);
@@ -53,7 +53,7 @@ public sealed class BadgeManagementCommands
             return 0;
         }));
 
-        var createCommand = new Command("create", "Create a badge collection or V3 group if one does not exist");
+        var createCommand = new Command("create", "Create a badge group if one does not exist");
         createCommand.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
         {
             var result = await client.CreateBadgeCollectionAsync(token);
@@ -75,7 +75,7 @@ public sealed class BadgeManagementCommands
         {
             Description = "Delete without prompting for confirmation"
         };
-        var deleteCommand = new Command("delete", "Delete a badge collection or V3 group");
+        var deleteCommand = new Command("delete", "Delete a badge group");
         deleteCommand.Options.Add(collectionIdOption);
         deleteCommand.Options.Add(forceOption);
         deleteCommand.SetAction(parseResult => RunAuthenticatedAsync(parseResult, async (client, token) =>
@@ -274,9 +274,9 @@ public sealed class BadgeManagementCommands
     }
 
     private static Option<string?> CreateCollectionIdOption() =>
-        new("--collection-id", "--group-id")
+        new("--group-id", "--collection-id")
         {
-            Description = "Badge collection (V3 group) ID; omit only when the tenant has exactly one"
+            Description = "Badge group ID; omit only when the tenant has exactly one group"
         };
 
     private static Option<string?> CreateUserIdOption() =>
@@ -387,10 +387,10 @@ public sealed class BadgeManagementCommands
         return collections.Count switch
         {
             0 => throw new InvalidOperationException(
-                $"No {client.ResourceName} exists. Create one with 'badges {(client.UseV3BadgeApi ? "--use-v3-badge-api groups" : "collections")} create'."),
+                $"No {client.ResourceName} exists. Create one with 'badges groups create{(client.UseV3BadgeApi ? " --use-v3-badge-api" : "")}'."),
             1 => collections[0].Id,
             _ => throw new InvalidOperationException(
-                $"Multiple {client.ResourcePlural} exist. Specify {(client.UseV3BadgeApi ? "--group-id" : "--collection-id")} with one of: {string.Join(", ", collections.Select(item => item.Id))}")
+                $"Multiple {client.ResourcePlural} exist. Specify --group-id with one of: {string.Join(", ", collections.Select(item => item.Id))}")
         };
     }
 

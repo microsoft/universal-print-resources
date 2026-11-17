@@ -12,25 +12,20 @@ using BadgeReleaseDemo.Helpers;
 namespace BadgeReleaseDemo.GraphApi;
 
 /// <summary>
-/// Handles badge collection (V3 group) and badge CRUD via MS Graph API.
+/// Handles badge group and badge CRUD via MS Graph API.
 /// </summary>
 public class BadgeManagement : IDisposable
 {
-    public const string CollectionSettlingNote =
-        "NOTE: Badge writes may need additional time to settle after collection provisioning succeeds. " +
-        "If adding a badge returns 'Badge collection not found', wait a few minutes and retry.";
-
     private readonly string graphBaseUrl;
     private readonly HttpClient httpClient;
 
     public bool UseV3BadgeApi { get; }
-    public string ResourceName => UseV3BadgeApi ? "badge group" : "badge collection";
-    public string ResourcePlural => UseV3BadgeApi ? "badge groups" : "badge collections";
-    public string ResourceIdLabel => UseV3BadgeApi ? "Group ID" : "Collection ID";
-    public string SettlingNote => UseV3BadgeApi
-        ? "NOTE: Badge writes may need additional time to settle after group provisioning succeeds. " +
-          "If adding a badge returns 'Badge group not found', wait a few minutes and retry."
-        : CollectionSettlingNote;
+    public string ResourceName => "badge group";
+    public string ResourcePlural => "badge groups";
+    public string ResourceIdLabel => "Group ID";
+    public string SettlingNote =>
+        "NOTE: Badge writes may need additional time to settle after group provisioning succeeds. " +
+        "If adding a badge reports that the group was not found, wait a few minutes and retry.";
     private string ResourceUrl => $"{graphBaseUrl}/print/{(UseV3BadgeApi ? "badgeGroups" : "badgeCollections")}";
 
     public BadgeManagement(
@@ -58,16 +53,16 @@ public class BadgeManagement : IDisposable
     }
 
     /// <summary>
-    /// Creates a badge collection. Handles 409 Conflict if it already exists.
-    /// Returns the actual collection ID from the service.
+    /// Creates a badge group. Handles 409 Conflict if it already exists.
+    /// Returns the actual group ID from the service.
     /// </summary>
     /// <remarks>
     /// Creation is a long-running operation. The service responds with 202 Accepted and a
     /// badgePrintOperation body (V3: printBadgeGroupCreateOperation with printBadgeGroup.id).
     /// The operation carries its ID and the eventual resource ID. The
-    /// collection appears in the list before it is provisioned, so we must poll
+    /// group appears in the list before it is provisioned, so we must poll
     /// GET /print/operations/{operationId} until the operation state is 'succeeded' before the
-    /// collection can accept badges — otherwise adding a badge fails with 404.
+    /// group can accept badges — otherwise adding a badge fails with 404.
     /// </remarks>
     public async Task<BadgeCollectionCreationResult> CreateBadgeCollectionAsync(string accessToken)
     {
@@ -135,7 +130,7 @@ public class BadgeManagement : IDisposable
     }
 
     /// <summary>
-    /// Polls GET /print/operations/{operationId} until the badge collection provisioning
+    /// Polls GET /print/operations/{operationId} until the badge group provisioning
     /// operation reaches a terminal state, honoring the service's Retry-After hint.
     /// </summary>
     private async Task<string> WaitForBadgeCollectionOperationAsync(string accessToken, string operationId)
@@ -275,7 +270,7 @@ public class BadgeManagement : IDisposable
     }
 
     /// <summary>
-    /// Adds a badge to the collection with the given badge ID and user UPN.
+    /// Adds a badge to the group with the given badge ID and user UPN.
     /// </summary>
     public async Task<BadgeMapping> AddBadgeAsync(
         string accessToken,
@@ -389,7 +384,7 @@ public class BadgeManagement : IDisposable
     }
 
     /// <summary>
-    /// Deletes a badge from the collection.
+    /// Deletes a badge from the group.
     /// </summary>
     public async Task<bool> DeleteBadgeAsync(string accessToken, string collectionId, string badgeId)
     {

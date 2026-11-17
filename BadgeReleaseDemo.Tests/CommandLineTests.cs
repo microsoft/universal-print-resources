@@ -56,6 +56,21 @@ public class CommandLineTests
         Assert.False(root.Parse(["badges", "collections", "list"]).GetValue((System.CommandLine.Option<bool>)option));
     }
 
+    [Theory]
+    [InlineData("groups", "--group-id")]
+    [InlineData("collections", "--collection-id")]
+    public void GroupTerminology_PreservesLegacyCommandAliases(string commandName, string optionName)
+    {
+        var root = Program.CreateRootCommand();
+        var result = root.Parse(["badges", commandName, "delete", optionName, "group-1", "--force"]);
+
+        Assert.Empty(result.Errors);
+        var parent = Assert.IsType<System.CommandLine.Parsing.CommandResult>(result.CommandResult.Parent);
+        Assert.Equal("groups", parent.Command.Name);
+        var option = Assert.Single(result.CommandResult.Command.Options, item => item.Name == "--group-id");
+        Assert.Equal("group-1", result.GetValue((System.CommandLine.Option<string?>)option));
+    }
+
     [Fact]
     public void MappingUpdate_RequiresUpnDuringParsing()
     {
