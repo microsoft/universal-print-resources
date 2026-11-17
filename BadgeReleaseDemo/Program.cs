@@ -38,17 +38,25 @@ public class Program
     {
         var rootCommand = new RootCommand(
             "Universal Print Badge Release demo and badge management utility.");
+        var useV3Option = new Option<bool>("--use-v3-badge-api")
+        {
+            Description = "Use Graph badge groups and the V3 badge contract; does not change IPP badge lookup",
+            Recursive = true
+        };
+        rootCommand.Options.Add(useV3Option);
 
         var demoUseV1Option = CreateUseV1BadgeApiOption();
         var demoCommand = new Command("demo", "Run the full interactive badge release workflow");
         demoCommand.Options.Add(demoUseV1Option);
         demoCommand.SetAction(async parseResult =>
         {
-            return await RunDemoAsync(parseResult.GetValue(demoUseV1Option));
+            return await RunDemoAsync(
+                parseResult.GetValue(demoUseV1Option),
+                parseResult.GetValue(useV3Option));
         });
 
         rootCommand.Subcommands.Add(demoCommand);
-        rootCommand.Subcommands.Add(BadgeManagementCommands.Create());
+        rootCommand.Subcommands.Add(BadgeManagementCommands.Create(useV3Option));
         return rootCommand;
     }
 
@@ -61,7 +69,7 @@ public class Program
             Description = "Use the legacy V1 badge lookup API during the demo"
         };
 
-    private static async Task<int> RunDemoAsync(bool useV1BadgeApi)
+    private static async Task<int> RunDemoAsync(bool useV1BadgeApi, bool useV3BadgeApi)
     {
         ConsoleHelper.WriteHeader("🏷️  Universal Print — Badge Release Demo");
 
@@ -95,7 +103,7 @@ public class Program
 
         using var printerReg = new PrinterRegistration(registrationBaseUrl);
         using var printerShare = new PrinterSharing(graphBaseUrl);
-        using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl);
+        using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl, useV3BadgeApi: useV3BadgeApi);
         using var jobSubmission = new PrintJobSubmission(graphBaseUrl);
         using var ippClient = new PrinterIppClient(
             ippServiceBaseUrl,
@@ -153,18 +161,18 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             // Step 4: Create badge collection (if needed)
             // ═══════════════════════════════════════════════════════════
-            ConsoleHelper.WriteStep("🏷️", "Creating badge collection...");
+            ConsoleHelper.WriteStep("🏷️", $"Creating {badgeMgmt.ResourceName}...");
             token = await auth.GetUserTokenAsync();
             var collectionResult = await badgeMgmt.CreateBadgeCollectionAsync(token);
             badgeCollectionId = collectionResult.Id;
             if (collectionResult.Created)
             {
-                ConsoleHelper.WriteSuccess($"Badge collection provisioning completed (ID: {badgeCollectionId}).");
-                ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
+                ConsoleHelper.WriteSuccess($"The {badgeMgmt.ResourceName} provisioning completed (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteWarning(badgeMgmt.SettlingNote);
             }
             else
             {
-                ConsoleHelper.WriteSuccess($"Using existing badge collection (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteSuccess($"Using existing {badgeMgmt.ResourceName} (ID: {badgeCollectionId}).");
             }
 
             // ═══════════════════════════════════════════════════════════

@@ -12,7 +12,7 @@ using BadgeReleaseDemo.Helpers;
 namespace BadgeReleaseDemo.GraphApi;
 
 /// <summary>
-/// Handles badge collection and badge CRUD via MS Graph API.
+/// Handles badge collection (V3 group) and badge CRUD via MS Graph API.
 /// </summary>
 public class BadgeManagement : IDisposable
 {
@@ -23,9 +23,23 @@ public class BadgeManagement : IDisposable
     private readonly string graphBaseUrl;
     private readonly HttpClient httpClient;
 
-    public BadgeManagement(string graphBaseUrl, HttpMessageHandler? httpMessageHandler = null)
+    public bool UseV3BadgeApi { get; }
+    public string ResourceName => UseV3BadgeApi ? "badge group" : "badge collection";
+    public string ResourcePlural => UseV3BadgeApi ? "badge groups" : "badge collections";
+    public string ResourceIdLabel => UseV3BadgeApi ? "Group ID" : "Collection ID";
+    public string SettlingNote => UseV3BadgeApi
+        ? "NOTE: Badge writes may need additional time to settle after group provisioning succeeds. " +
+          "If adding a badge returns 'Badge group not found', wait a few minutes and retry."
+        : CollectionSettlingNote;
+    private string ResourceUrl => $"{graphBaseUrl}/print/{(UseV3BadgeApi ? "badgeGroups" : "badgeCollections")}";
+
+    public BadgeManagement(
+        string graphBaseUrl,
+        HttpMessageHandler? httpMessageHandler = null,
+        bool useV3BadgeApi = false)
     {
         this.graphBaseUrl = graphBaseUrl;
+        UseV3BadgeApi = useV3BadgeApi;
         httpClient = httpMessageHandler == null
             ? new HttpClient()
             : new HttpClient(httpMessageHandler);
@@ -35,12 +49,12 @@ public class BadgeManagement : IDisposable
 
     public async Task<IReadOnlyList<BadgeCollection>> ListBadgeCollectionsAsync(string accessToken)
     {
-        using var request = CreateRequest(HttpMethod.Get, $"{graphBaseUrl}/print/badgeCollections", accessToken);
+        using var request = CreateRequest(HttpMethod.Get, ResourceUrl, accessToken);
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
-        EnsureSuccess(response, responseBody, "list badge collections");
-        return ParseList(responseBody, ParseBadgeCollection, "badge collections");
+        EnsureSuccess(response, responseBody, $"list {ResourcePlural}");
+        return ParseList(responseBody, ParseBadgeCollection, ResourcePlural);
     }
 
     /// <summary>
@@ -49,21 +63,22 @@ public class BadgeManagement : IDisposable
     /// </summary>
     /// <remarks>
     /// Creation is a long-running operation. The service responds with 202 Accepted and a
-    /// badgePrintOperation body carrying an operation ID and the eventual collection ID. The
+    /// badgePrintOperation body (V3: printBadgeGroupCreateOperation with printBadgeGroup.id).
+    /// The operation carries its ID and the eventual resource ID. The
     /// collection appears in the list before it is provisioned, so we must poll
     /// GET /print/operations/{operationId} until the operation state is 'succeeded' before the
     /// collection can accept badges — otherwise adding a badge fails with 404.
     /// </remarks>
     public async Task<BadgeCollectionCreationResult> CreateBadgeCollectionAsync(string accessToken)
     {
-        using var request = CreateRequest(HttpMethod.Post, $"{graphBaseUrl}/print/badgeCollections", accessToken);
+        using var request = CreateRequest(HttpMethod.Post, ResourceUrl, accessToken);
         request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
         if (response.StatusCode == HttpStatusCode.Conflict)
         {
-            ConsoleHelper.WriteInfo("Badge collection already exists (this is OK).");
+            ConsoleHelper.WriteInfo($"The {ResourceName} already exists (this is OK).");
             return new BadgeCollectionCreationResult(
                 await GetBadgeCollectionIdAsync(accessToken),
                 Created: false);
@@ -71,10 +86,14 @@ public class BadgeManagement : IDisposable
 
         if (!response.IsSuccessStatusCode)
         {
-            throw new HttpRequestException($"Failed to create badge collection: {response.StatusCode} - {responseBody}");
+            throw new HttpRequestException($"Failed to create {ResourceName}: {response.StatusCode} - {responseBody}", null, response.StatusCode);
+        }
+        if (UseV3BadgeApi)
+        {
+            EnsureStatus(response, responseBody, HttpStatusCode.Accepted, "create badge group");
         }
 
-        ConsoleHelper.WriteInfo("Badge collection creation initiated.");
+        ConsoleHelper.WriteInfo($"The {ResourceName} creation was initiated.");
 
         // 202 Accepted: creation is a long-running operation — poll the operation to completion.
         if (response.StatusCode == HttpStatusCode.Accepted)
@@ -84,11 +103,23 @@ public class BadgeManagement : IDisposable
             if (string.IsNullOrEmpty(operationId))
             {
                 throw new InvalidOperationException(
-                    "Badge collection creation returned 202 Accepted without an operation ID to poll.");
+                    $"The {ResourceName} creation returned 202 Accepted without an operation ID to poll.");
             }
 
-            ConsoleHelper.WriteProgress("Waiting for badge collection to be provisioned (this can take up to 10 minutes)...");
-            await WaitForBadgeCollectionOperationAsync(accessToken, operationId);
+            ConsoleHelper.WriteProgress($"Waiting for {ResourceName} to be provisioned (this can take up to 10 minutes)...");
+            var completedResourceId = await WaitForBadgeCollectionOperationAsync(accessToken, operationId);
+
+            if (UseV3BadgeApi)
+            {
+                var groupId = !string.IsNullOrWhiteSpace(completedResourceId) ? completedResourceId : collectionId;
+                if (string.IsNullOrWhiteSpace(groupId))
+                {
+                    throw new InvalidOperationException(
+                        "Badge group creation succeeded without printBadgeGroup.id.");
+                }
+
+                return new BadgeCollectionCreationResult(groupId, Created: true);
+            }
 
             // The collection ID is returned with the operation; fall back to a list lookup if absent.
             return new BadgeCollectionCreationResult(
@@ -107,12 +138,12 @@ public class BadgeManagement : IDisposable
     /// Polls GET /print/operations/{operationId} until the badge collection provisioning
     /// operation reaches a terminal state, honoring the service's Retry-After hint.
     /// </summary>
-    private async Task WaitForBadgeCollectionOperationAsync(string accessToken, string operationId)
+    private async Task<string> WaitForBadgeCollectionOperationAsync(string accessToken, string operationId)
     {
         var maxWait = TimeSpan.FromMinutes(10);
         var defaultDelay = TimeSpan.FromSeconds(5);
         var stopwatch = Stopwatch.StartNew();
-        ConsoleHelper.WriteInfo($"Badge collection operation ID: {operationId}");
+        ConsoleHelper.WriteInfo($"The {ResourceName} operation ID: {operationId}");
 
         while (stopwatch.Elapsed < maxWait)
         {
@@ -126,21 +157,21 @@ public class BadgeManagement : IDisposable
             if (!response.IsSuccessStatusCode)
             {
                 throw new HttpRequestException(
-                    $"Failed to poll badge collection operation: {response.StatusCode} - {responseBody}");
+                    $"Failed to poll {ResourceName} operation: {response.StatusCode} - {responseBody}", null, response.StatusCode);
             }
 
             var state = ParseOperationState(responseBody);
             var displayState = string.IsNullOrWhiteSpace(state) ? "unknown" : state;
-            ConsoleHelper.WriteInfo($"Badge collection operation state: {displayState}");
+            ConsoleHelper.WriteInfo($"The {ResourceName} operation state: {displayState}");
 
             switch (state?.ToLowerInvariant())
             {
                 case "succeeded":
-                    ConsoleHelper.WriteSuccess("Badge collection provisioning completed.");
-                    return;
+                    ConsoleHelper.WriteSuccess($"The {ResourceName} provisioning completed.");
+                    return UseV3BadgeApi ? ParseBadgePrintOperation(responseBody).CollectionId : string.Empty;
                 case "failed":
                     throw new InvalidOperationException(
-                        $"Badge collection provisioning failed: {responseBody}");
+                        $"The {ResourceName} provisioning failed: {responseBody}");
             }
 
             var remainingWait = maxWait - stopwatch.Elapsed;
@@ -155,11 +186,11 @@ public class BadgeManagement : IDisposable
                 remainingWait,
                 DateTimeOffset.UtcNow);
             ConsoleHelper.WriteProgress(
-                $"Badge collection provisioning is still in progress; retrying in {delay.TotalSeconds:0.#}s...");
+                $"The {ResourceName} provisioning is still in progress; retrying in {delay.TotalSeconds:0.#}s...");
             await Task.Delay(delay);
         }
 
-        throw new TimeoutException("Timed out waiting for badge collection provisioning to complete.");
+        throw new TimeoutException($"Timed out waiting for {ResourceName} provisioning to complete.");
     }
 
     internal static TimeSpan GetRetryDelay(
@@ -174,7 +205,7 @@ public class BadgeManagement : IDisposable
         return requestedDelay < remainingWait ? requestedDelay : remainingWait;
     }
 
-    private static (string OperationId, string CollectionId) ParseBadgePrintOperation(string responseBody)
+    private (string OperationId, string CollectionId) ParseBadgePrintOperation(string responseBody)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
         {
@@ -183,9 +214,11 @@ public class BadgeManagement : IDisposable
 
         var doc = JsonSerializer.Deserialize<JsonElement>(responseBody);
         var operationId = doc.TryGetProperty("id", out var idProp) ? idProp.GetString() ?? string.Empty : string.Empty;
-        var collectionId = doc.TryGetProperty("collectionId", out var collectionProp)
-            ? collectionProp.GetString() ?? string.Empty
-            : string.Empty;
+        var collectionId = UseV3BadgeApi
+            ? doc.TryGetProperty("printBadgeGroup", out var group) && group.ValueKind == JsonValueKind.Object
+                ? ReadNullableString(group, "id") ?? string.Empty
+                : string.Empty
+            : ReadNullableString(doc, "collectionId") ?? string.Empty;
 
         return (operationId, collectionId);
     }
@@ -210,12 +243,16 @@ public class BadgeManagement : IDisposable
     private async Task<string> GetBadgeCollectionIdAsync(string accessToken)
     {
         var collectionId = await TryGetBadgeCollectionIdAsync(accessToken);
-        return collectionId ?? throw new InvalidOperationException("No badge collection ID was returned by the service.");
+        return collectionId ?? throw new InvalidOperationException($"No {ResourceName} ID was returned by the service.");
     }
 
     private async Task<string?> TryGetBadgeCollectionIdAsync(string accessToken)
     {
         var collections = await ListBadgeCollectionsAsync(accessToken);
+        if (UseV3BadgeApi && collections.Count != 1)
+        {
+            throw new InvalidOperationException("Expected exactly one badge group when resolving the creation result.");
+        }
         return collections.FirstOrDefault()?.Id;
     }
 
@@ -223,7 +260,7 @@ public class BadgeManagement : IDisposable
     {
         using var request = CreateRequest(
             HttpMethod.Delete,
-            $"{graphBaseUrl}/print/badgeCollections/{Uri.EscapeDataString(collectionId)}",
+            $"{ResourceUrl}/{Uri.EscapeDataString(collectionId)}",
             accessToken);
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
@@ -233,7 +270,7 @@ public class BadgeManagement : IDisposable
             return false;
         }
 
-        EnsureSuccess(response, responseBody, "delete badge collection");
+        EnsureSuccess(response, responseBody, $"delete {ResourceName}");
         return true;
     }
 
@@ -247,10 +284,15 @@ public class BadgeManagement : IDisposable
         string upn,
         string? userId = null)
     {
+        if (UseV3BadgeApi && string.IsNullOrWhiteSpace(upn))
+        {
+            throw new ArgumentException("User principal name must be provided.", nameof(upn));
+        }
+
         var requestBody = new Dictionary<string, string>
         {
             ["id"] = badgeId,
-            ["upn"] = upn
+            [UseV3BadgeApi ? "userPrincipalName" : "upn"] = upn
         };
 
         if (!string.IsNullOrWhiteSpace(userId))
@@ -261,7 +303,7 @@ public class BadgeManagement : IDisposable
         var json = JsonSerializer.Serialize(requestBody);
         using var request = CreateRequest(
             HttpMethod.Post,
-            $"{graphBaseUrl}/print/badgeCollections/{Uri.EscapeDataString(collectionId)}/badges",
+            $"{ResourceUrl}/{Uri.EscapeDataString(collectionId)}/badges",
             accessToken);
         request.Content = new StringContent(json, Encoding.UTF8, "application/json");
         using var response = await httpClient.SendAsync(request);
@@ -281,12 +323,12 @@ public class BadgeManagement : IDisposable
     {
         using var request = CreateRequest(
             HttpMethod.Get,
-            $"{graphBaseUrl}/print/badgeCollections/{Uri.EscapeDataString(collectionId)}/badges",
+            $"{ResourceUrl}/{Uri.EscapeDataString(collectionId)}/badges",
             accessToken);
         using var response = await httpClient.SendAsync(request);
         var responseBody = await response.Content.ReadAsStringAsync();
 
-        if (response.StatusCode == HttpStatusCode.NotImplemented)
+        if (!UseV3BadgeApi && response.StatusCode == HttpStatusCode.NotImplemented)
         {
             return new BadgeMappingListResult(false, Array.Empty<BadgeMapping>());
         }
@@ -326,7 +368,7 @@ public class BadgeManagement : IDisposable
 
         var requestBody = new Dictionary<string, string>
         {
-            ["upn"] = upn
+            [UseV3BadgeApi ? "userPrincipalName" : "upn"] = upn
         };
 
         if (!string.IsNullOrWhiteSpace(userId))
@@ -371,7 +413,7 @@ public class BadgeManagement : IDisposable
         string badgeId) =>
         CreateRequest(
             method,
-            $"{graphBaseUrl}/print/badgeCollections/{Uri.EscapeDataString(collectionId)}/badges/{Uri.EscapeDataString(badgeId)}",
+            $"{ResourceUrl}/{Uri.EscapeDataString(collectionId)}/badges/{Uri.EscapeDataString(badgeId)}",
             accessToken);
 
     private static HttpRequestMessage CreateRequest(HttpMethod method, string requestUri, string accessToken)
@@ -422,20 +464,25 @@ public class BadgeManagement : IDisposable
         return items.EnumerateArray().Select(parseItem).ToArray();
     }
 
-    private static BadgeCollection ParseBadgeCollection(JsonElement collection)
+    private BadgeCollection ParseBadgeCollection(JsonElement collection)
     {
         var id = collection.GetProperty("id").GetString();
         return !string.IsNullOrWhiteSpace(id)
-            ? new BadgeCollection(id)
-            : throw new InvalidOperationException("Badge collection response contained an empty ID.");
+            ? new BadgeCollection(
+                id,
+                UseV3BadgeApi ? ReadNullableString(collection, "displayName") : null,
+                UseV3BadgeApi ? ReadNullableString(collection, "createdDateTime") : null)
+            : throw new InvalidOperationException($"The {ResourceName} response contained an empty ID.");
     }
 
-    private static BadgeMapping ParseBadgeMapping(JsonElement badge)
+    private BadgeMapping ParseBadgeMapping(JsonElement badge)
     {
         var id = badge.GetProperty("id").GetString();
-        var upn = badge.GetProperty("upn").GetString();
+        var upn = UseV3BadgeApi
+            ? ReadNullableString(badge, "userPrincipalName")
+            : badge.GetProperty("upn").GetString();
 
-        if (string.IsNullOrWhiteSpace(id) || string.IsNullOrWhiteSpace(upn))
+        if (string.IsNullOrWhiteSpace(id) || (!UseV3BadgeApi && string.IsNullOrWhiteSpace(upn)))
         {
             throw new InvalidOperationException("Badge response contained an empty ID or UPN.");
         }
@@ -445,14 +492,23 @@ public class BadgeManagement : IDisposable
             ? userIdProperty.GetString()
             : null;
 
-        return new BadgeMapping(id, upn, userId);
+        return new BadgeMapping(
+            id, upn, userId,
+            UseV3BadgeApi ? ReadNullableString(badge, "physicalBadgeId") : null,
+            UseV3BadgeApi ? ReadNullableString(badge, "createdDateTime") : null);
     }
+
+    private static string? ReadNullableString(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var property) && property.ValueKind != JsonValueKind.Null
+            ? property.GetString()
+            : null;
 }
 
-public sealed record BadgeCollection(string Id);
+public sealed record BadgeCollection(string Id, string? DisplayName = null, string? CreatedDateTime = null);
 
 public sealed record BadgeCollectionCreationResult(string Id, bool Created);
 
-public sealed record BadgeMapping(string Id, string Upn, string? UserId);
+public sealed record BadgeMapping(
+    string Id, string? Upn, string? UserId, string? PhysicalBadgeId = null, string? CreatedDateTime = null);
 
 public sealed record BadgeMappingListResult(bool IsSupported, IReadOnlyList<BadgeMapping> Badges);

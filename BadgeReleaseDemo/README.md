@@ -152,6 +152,20 @@ the demo with the legacy badge lookup API, use:
 dotnet run --no-build -- demo --use-v1-badge-api
 ```
 
+To opt in to the new Graph badge contract, use:
+
+```powershell
+dotnet run --no-build -- demo --use-v3-badge-api
+```
+
+`--use-v3-badge-api` changes only Graph badge management. It uses
+`/print/badgeGroups` instead of `/print/badgeCollections` and
+`userPrincipalName` instead of `upn` in badge JSON. It does not change the
+configured service base URL, authentication, scopes, print-job APIs, or IPP calls.
+Printer-side badge lookup still uses V2 by default; `--use-v1-badge-api` can be
+combined with the V3 flag to select legacy printer-side lookup independently.
+Without the V3 flag, existing Graph collection behavior is unchanged.
+
 ## Badge Management Commands
 
 Badge management commands acquire the delegated Universal Print token through the
@@ -191,6 +205,48 @@ UPN when it is not changing.
 
 CSV import is not currently included.
 
+### V3 Graph badge groups
+
+The V3 flag is available on both `demo` and `badges`, including their subcommands.
+`groups` is an alias for `collections`, and `--group-id` is an alias for
+`--collection-id`. These aliases do not select the API contract by themselves:
+include `--use-v3-badge-api` for every invocation targeting the new Graph APIs.
+The existing `--upn` option supplies the V3 `userPrincipalName` property.
+
+```powershell
+dotnet run -- badges --use-v3-badge-api groups list
+dotnet run -- badges --use-v3-badge-api groups create
+dotnet run -- badges --use-v3-badge-api mappings list --group-id <group-id>
+dotnet run -- badges --use-v3-badge-api mappings get --group-id <group-id> --badge-id <badge-id>
+dotnet run -- badges --use-v3-badge-api mappings create --group-id <group-id> --badge-id <badge-id> --upn <user-upn>
+dotnet run -- badges --use-v3-badge-api mappings update --group-id <group-id> --badge-id <badge-id> --upn <user-upn> --user-id <user-guid>
+dotnet run -- badges --use-v3-badge-api mappings delete --group-id <group-id> --badge-id <badge-id>
+dotnet run -- badges --use-v3-badge-api groups delete --group-id <group-id>
+```
+
+Group creation polls `/print/operations/{id}` until provisioning succeeds and
+reads the group identity from `printBadgeGroup.id`, not the legacy `collectionId`.
+Operation IDs are opaque tokens. A group's provisioning operation timestamp is
+not used as its creation date.
+
+V3 supports group list/create/delete and badge list/create/get/update/delete.
+Group `displayName`/`createdDateTime` and badge `physicalBadgeId`/`createdDateTime`
+may be null; the CLI displays unavailable values as `(null)`. The badge's `id`
+remains its identity: a null `physicalBadgeId` is not replaced with `id`.
+User data may also be null on reads. Writes still require a nonempty `--upn`,
+and `--user-id`, when supplied, must be a GUID. Updates send the required
+`userPrincipalName`, rather than treating PATCH as a sparse identity update.
+Unsupported properties are not sent.
+
+The service may return `501 Not Implemented` for unavailable features; V3
+reports the actual failure with a nonzero exit code and never retries a legacy
+route. Group get/update, badge user navigation, and physical-badge lookup are
+not exposed by this demo. Bulk import is not available: `createBulkUploadSession`
+(which requires `{"properties":{"size":<Int64>}}`) is currently unimplemented,
+and the new contract has no `processUpload` action. The demo does not call either
+action or claim a working bulk-import workflow. Availability also depends on
+the target service and the tenant's preview enablement.
+
 ## Project Structure
 
 ```
@@ -221,8 +277,8 @@ BadgeReleaseDemo/
     └── SampleDocument.pdf              # Default test PDF (or supply your own)
 
 BadgeReleaseDemo.Tests/
-├── CommandLineTests.cs                 # Command routing and V1 option scope
-├── BadgeManagementTests.cs             # Collection polling and mapping update contracts
+├── CommandLineTests.cs                 # Command routing, V1 scope, and V3 opt-in
+├── BadgeManagementTests.cs             # Legacy/V3 CRUD, nulls, errors, and operation polling
 └── PrinterIppClientTests.cs            # V1 and V2 badge lookup request shapes
 ```
 

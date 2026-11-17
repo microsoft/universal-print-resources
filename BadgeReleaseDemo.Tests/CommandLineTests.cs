@@ -27,6 +27,35 @@ public class CommandLineTests
         Assert.Equal(1, await parseResult.InvokeAsync());
     }
 
+    [Theory]
+    [InlineData("--use-v3-badge-api demo")]
+    [InlineData("demo --use-v3-badge-api")]
+    [InlineData("demo --use-v3-badge-api --use-v1-badge-api")]
+    [InlineData("badges --use-v3-badge-api groups list")]
+    [InlineData("badges groups create --use-v3-badge-api")]
+    [InlineData("badges mappings get --use-v3-badge-api --group-id group-1 --badge-id badge-1")]
+    [InlineData("badges mappings create --use-v3-badge-api --group-id group-1 --badge-id badge-1 --upn user@example.com")]
+    public void V3Option_IsRecursiveAndIndependentOfIppLookup(string arguments)
+    {
+        var root = Program.CreateRootCommand();
+
+        var result = root.Parse(arguments.Split(' '));
+
+        Assert.Empty(result.Errors);
+        var option = Assert.Single(root.Options, item => item.Name == "--use-v3-badge-api");
+        Assert.True(result.GetValue((System.CommandLine.Option<bool>)option));
+    }
+
+    [Fact]
+    public void V3Option_IsOptIn()
+    {
+        var root = Program.CreateRootCommand();
+        var option = Assert.Single(root.Options, item => item.Name == "--use-v3-badge-api");
+
+        Assert.False(root.Parse(["demo"]).GetValue((System.CommandLine.Option<bool>)option));
+        Assert.False(root.Parse(["badges", "collections", "list"]).GetValue((System.CommandLine.Option<bool>)option));
+    }
+
     [Fact]
     public void MappingUpdate_RequiresUpnDuringParsing()
     {

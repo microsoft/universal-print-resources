@@ -7,6 +7,201 @@ namespace BadgeReleaseDemo.Tests;
 
 public class BadgeManagementTests
 {
+    [Theory]
+    [InlineData(false, "badgeCollections", "upn")]
+    [InlineData(true, "badgeGroups", "userPrincipalName")]
+    public async Task BadgeCrud_UsesSelectedContract(bool useV3, string resource, string upnProperty)
+    {
+        const string userId = "826e5942-3f12-47af-bb77-ad77c33fc465";
+        var badgeJson = $$"""{"id":"badge/1","{{upnProperty}}":"user@example.com","userId":"{{userId}}","physicalBadgeId":null,"createdDateTime":null,"user":null}""";
+        var handler = new RecordingHttpMessageHandler((_, call) => call switch
+        {
+            0 => RecordingHttpMessageHandler.JsonResponse(HttpStatusCode.Created, badgeJson),
+            1 or 2 => RecordingHttpMessageHandler.JsonResponse(HttpStatusCode.OK, badgeJson),
+            3 => RecordingHttpMessageHandler.JsonResponse(HttpStatusCode.OK, $$"""{"value":[{{badgeJson}}]}"""),
+            4 or 5 => new HttpResponseMessage(HttpStatusCode.NoContent),
+            _ => throw new InvalidOperationException("Unexpected request.")
+        });
+        using var client = new BadgeManagement("https://graph.example/beta", handler, useV3);
+
+        var created = await client.AddBadgeAsync("token", "group/1", "badge/1", "user@example.com", userId);
+        var updated = await client.UpdateBadgeAsync("token", "group/1", "badge/1", "user@example.com", userId);
+        var retrieved = await client.GetBadgeAsync("token", "group/1", "badge/1");
+        var listed = await client.ListBadgesAsync("token", "group/1");
+        Assert.True(await client.DeleteBadgeAsync("token", "group/1", "badge/1"));
+        Assert.True(await client.DeleteBadgeCollectionAsync("token", "group/1"));
+
+        Assert.Equal(created, updated);
+        Assert.Equal(created, retrieved);
+        Assert.True(listed.IsSupported);
+        Assert.Equal(created, Assert.Single(listed.Badges));
+        Assert.Equal("badge/1", created.Id);
+        Assert.Equal("user@example.com", created.Upn);
+        Assert.Equal(userId, created.UserId);
+        Assert.Null(created.PhysicalBadgeId);
+        Assert.Null(created.CreatedDateTime);
+        var resourceUrl = $"https://graph.example/beta/print/{resource}/group%2F1";
+        Assert.Equal(
+            [HttpMethod.Post, HttpMethod.Patch, HttpMethod.Get, HttpMethod.Get, HttpMethod.Delete, HttpMethod.Delete],
+            handler.Requests.Select(request => request.Method));
+        Assert.Equal(
+            [$"{resourceUrl}/badges", $"{resourceUrl}/badges/badge%2F1", $"{resourceUrl}/badges/badge%2F1",
+             $"{resourceUrl}/badges", $"{resourceUrl}/badges/badge%2F1", resourceUrl],
+            handler.Requests.Select(request => request.Uri));
+        Assert.All(handler.Requests, request => Assert.Equal("token", request.BearerToken));
+        foreach (var request in handler.Requests.Take(2))
+        {
+            using var body = JsonDocument.Parse(request.Body!);
+            Assert.Equal("user@example.com", body.RootElement.GetProperty(upnProperty).GetString());
+            Assert.Equal(userId, body.RootElement.GetProperty("userId").GetString());
+            Assert.False(body.RootElement.TryGetProperty(useV3 ? "upn" : "userPrincipalName", out _));
+            Assert.False(body.RootElement.TryGetProperty("physicalBadgeId", out _));
+            Assert.False(body.RootElement.TryGetProperty("createdDateTime", out _));
+            Assert.False(body.RootElement.TryGetProperty("user", out _));
+        }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task V3Creation_UsesGroupNavigationAndOpaqueOperationToken(bool groupInInitialResponse)
+    {
+        const string navigation = ""","printBadgeGroup":{"id":"group-1","displayName":null,"createdDateTime":null}""";
+        var handler = new RecordingHttpMessageHandler((_, call) => call switch
+        {
+            0 => RecordingHttpMessageHandler.JsonResponse(HttpStatusCode.Accepted,
+                """{"@odata.type":"#microsoft.graph.printBadgeGroupCreateOperation","id":"opaque+/=%token","collectionId":"wrong-legacy-id" """
+                + (groupInInitialResponse ? navigation : "") + "}"),
+            1 => RecordingHttpMessageHandler.JsonResponse(HttpStatusCode.OK,
+                """{"status":{"state":"succeeded"}""" + (groupInInitialResponse ? "" : navigation) + "}"),
+            _ => throw new InvalidOperationException("Unexpected request.")
+        });
+        using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
+
+        var result = await client.CreateBadgeCollectionAsync("token");
+
+        Assert.True(result.Created);
+        Assert.Equal("group-1", result.Id);
+        Assert.Equal("https://graph.example/beta/print/badgeGroups", handler.Requests[0].Uri);
+        Assert.Equal("{}", handler.Requests[0].Body);
+        Assert.Equal("https://graph.example/beta/print/operations/opaque%2B%2F%3D%25token", handler.Requests[1].Uri);
+    }
+
+    [Fact]
+    public async Task V3Creation_RejectsMissingGroupIdentityRatherThanUsingLegacyIdOrListing()
+    {
+        var handler = new RecordingHttpMessageHandler((_, call) =>
+            RecordingHttpMessageHandler.JsonResponse(
+                call == 0 ? HttpStatusCode.Accepted : HttpStatusCode.OK,
+                call == 0
+                    ? """{"id":"operation-1","collectionId":"legacy-id","printBadgeGroup":null}"""
+                    : """{"status":{"state":"succeeded"},"printBadgeGroup":null}"""));
+        using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.CreateBadgeCollectionAsync("token"));
+
+        Assert.Contains("printBadgeGroup.id", error.Message);
+        Assert.Equal(2, handler.Requests.Count);
+    }
+
+    [Theory]
+    [InlineData("succeeded", true)]
+    [InlineData("failed", false)]
+    public async Task V3Creation_PollsNonterminalStateAndPropagatesFailure(string finalState, bool succeeds)
+    {
+        var handler = new RecordingHttpMessageHandler((_, call) =>
+        {
+            var response = RecordingHttpMessageHandler.JsonResponse(
+                call == 0 ? HttpStatusCode.Accepted : HttpStatusCode.OK,
+                call switch
+                {
+                    0 => """{"id":"operation-1","printBadgeGroup":{"id":"group-1"}}""",
+                    1 => """{"status":{"state":"running"}}""",
+                    _ => $$$"""{"status":{"state":"{{{finalState}}}","description":"Provisioning result"}}"""
+                });
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.Zero);
+            return response;
+        });
+        using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
+
+        if (succeeds)
+        {
+            Assert.Equal("group-1", (await client.CreateBadgeCollectionAsync("token")).Id);
+        }
+        else
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => client.CreateBadgeCollectionAsync("token"));
+            Assert.Contains("Provisioning result", error.Message);
+        }
+
+        Assert.Equal(3, handler.Requests.Count);
+        Assert.All(handler.Requests.Skip(1), request =>
+            Assert.Equal("https://graph.example/beta/print/operations/operation-1", request.Uri));
+    }
+
+    [Fact]
+    public async Task V3Reads_AllowUnavailableFieldsWithoutInventingIdentity()
+    {
+        var handler = new RecordingHttpMessageHandler((_, call) =>
+            RecordingHttpMessageHandler.JsonResponse(HttpStatusCode.OK, call == 0
+                ? """{"value":[{"@odata.type":"#microsoft.graph.printBadgeGroup","id":"group-1","displayName":null,"createdDateTime":null}]}"""
+                : """{"@odata.type":"#microsoft.graph.printBadge","id":"badge-1","userPrincipalName":null,"userId":null,"physicalBadgeId":null,"createdDateTime":null,"user":null}"""));
+        using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
+
+        var group = Assert.Single(await client.ListBadgeCollectionsAsync("token"));
+        var badge = await client.GetBadgeAsync("token", group.Id, "badge-1");
+
+        Assert.Equal("group-1", group.Id);
+        Assert.Null(group.DisplayName);
+        Assert.Null(group.CreatedDateTime);
+        Assert.NotNull(badge);
+        Assert.Equal("badge-1", badge.Id);
+        Assert.Null(badge.Upn);
+        Assert.Null(badge.UserId);
+        Assert.Null(badge.PhysicalBadgeId);
+        Assert.Null(badge.CreatedDateTime);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.NotImplemented)]
+    [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.InternalServerError)]
+    public async Task V3List_ReportsServiceErrorsWithoutLegacyFallback(HttpStatusCode status)
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) =>
+            RecordingHttpMessageHandler.JsonResponse(status, """{"error":{"message":"Service limitation"}}"""));
+        using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
+
+        var error = await Assert.ThrowsAsync<HttpRequestException>(() => client.ListBadgesAsync("token", "group-1"));
+
+        Assert.Equal(status, error.StatusCode);
+        Assert.Contains("Service limitation", error.Message);
+        Assert.Contains("/print/badgeGroups/group-1/badges", Assert.Single(handler.Requests).Uri);
+    }
+
+    [Fact]
+    public async Task LegacyList_PreservesUnsupportedResult()
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) => new HttpResponseMessage(HttpStatusCode.NotImplemented));
+        using var client = new BadgeManagement("https://graph.example/v1.0", handler);
+
+        Assert.False((await client.ListBadgesAsync("token", "collection-1")).IsSupported);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    public async Task V3Writes_RejectEmptyUserPrincipalName(string upn)
+    {
+        var handler = new RecordingHttpMessageHandler((_, _) => throw new InvalidOperationException("Unexpected request."));
+        using var client = new BadgeManagement("https://graph.example/beta", handler, useV3BadgeApi: true);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => client.AddBadgeAsync("token", "group-1", "badge-1", upn));
+        await Assert.ThrowsAsync<ArgumentException>(() => client.UpdateBadgeAsync("token", "group-1", "badge-1", upn, null));
+
+        Assert.Empty(handler.Requests);
+    }
+
     [Fact]
     public async Task CreateBadgeCollectionAsync_AcceptsCaseInsensitiveSucceededState()
     {
@@ -32,8 +227,10 @@ public class BadgeManagementTests
             handler.Requests[1].Uri);
     }
 
-    [Fact]
-    public async Task CreateBadgeCollectionAsync_ReportsExistingCollection()
+    [Theory]
+    [InlineData(false, "badgeCollections")]
+    [InlineData(true, "badgeGroups")]
+    public async Task CreateBadgeCollectionAsync_ReportsExistingCollection(bool useV3, string resource)
     {
         var handler = new RecordingHttpMessageHandler((_, call) => call switch
         {
@@ -43,12 +240,14 @@ public class BadgeManagementTests
                 """{"value":[{"id":"existing-collection"}]}"""),
             _ => throw new InvalidOperationException("Unexpected request.")
         });
-        using var client = new BadgeManagement("https://graph.example/v1.0", handler);
+        using var client = new BadgeManagement("https://graph.example/v1.0", handler, useV3);
 
         var result = await client.CreateBadgeCollectionAsync("access-token");
 
         Assert.Equal("existing-collection", result.Id);
         Assert.False(result.Created);
+        Assert.All(handler.Requests, request =>
+            Assert.Equal($"https://graph.example/v1.0/print/{resource}", request.Uri));
     }
 
     [Fact]
