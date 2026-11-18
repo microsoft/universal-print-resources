@@ -10,21 +10,54 @@ public class CommandLineTests
     }
 
     [Fact]
-    public void V1Option_IsAcceptedOnlyByDemo()
+    public async Task RemovedV1Option_ReturnsFailureExitCode()
+    {
+        var parseResult = Program.CreateRootCommand().Parse(["demo", "--use-v1-badge-api"]);
+
+        Assert.Equal(1, await parseResult.InvokeAsync());
+    }
+
+    [Theory]
+    [InlineData("--use-v3-badge-api demo")]
+    [InlineData("demo --use-v3-badge-api")]
+    [InlineData("badges --use-v3-badge-api groups list")]
+    [InlineData("badges groups create --use-v3-badge-api")]
+    [InlineData("badges mappings get --use-v3-badge-api --group-id group-1 --badge-id badge-1")]
+    [InlineData("badges mappings create --use-v3-badge-api --group-id group-1 --badge-id badge-1 --upn user@example.com")]
+    public void V3GraphOption_IsRecursive(string arguments)
     {
         var root = Program.CreateRootCommand();
 
-        Assert.Empty(root.Parse(["demo", "--use-v1-badge-api"]).Errors);
-        Assert.NotEmpty(root.Parse(["badges", "--use-v1-badge-api"]).Errors);
-        Assert.NotEmpty(root.Parse(["--use-v1-badge-api", "badges"]).Errors);
+        var result = root.Parse(arguments.Split(' '));
+
+        Assert.Empty(result.Errors);
+        var option = Assert.Single(root.Options, item => item.Name == "--use-v3-badge-api");
+        Assert.True(result.GetValue((System.CommandLine.Option<bool>)option));
     }
 
     [Fact]
-    public async Task InvalidV1OptionScope_ReturnsFailureExitCode()
+    public void V3Option_IsOptIn()
     {
-        var parseResult = Program.CreateRootCommand().Parse(["badges", "--use-v1-badge-api"]);
+        var root = Program.CreateRootCommand();
+        var option = Assert.Single(root.Options, item => item.Name == "--use-v3-badge-api");
 
-        Assert.Equal(1, await parseResult.InvokeAsync());
+        Assert.False(root.Parse(["demo"]).GetValue((System.CommandLine.Option<bool>)option));
+        Assert.False(root.Parse(["badges", "collections", "list"]).GetValue((System.CommandLine.Option<bool>)option));
+    }
+
+    [Theory]
+    [InlineData("groups", "--group-id")]
+    [InlineData("collections", "--collection-id")]
+    public void GroupTerminology_PreservesLegacyCommandAliases(string commandName, string optionName)
+    {
+        var root = Program.CreateRootCommand();
+        var result = root.Parse(["badges", commandName, "delete", optionName, "group-1", "--force"]);
+
+        Assert.Empty(result.Errors);
+        var parent = Assert.IsType<System.CommandLine.Parsing.CommandResult>(result.CommandResult.Parent);
+        Assert.Equal("groups", parent.Command.Name);
+        var option = Assert.Single(result.CommandResult.Command.Options, item => item.Name == "--group-id");
+        Assert.Equal("group-1", result.GetValue((System.CommandLine.Option<string?>)option));
     }
 
     [Fact]
@@ -36,6 +69,24 @@ public class CommandLineTests
         Assert.Contains(
             parseResult.Errors,
             error => error.Message.Contains("--upn", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("create", false)]
+    [InlineData("update", false)]
+    [InlineData("create", true)]
+    [InlineData("update", true)]
+    public void MappingWrites_RejectEmptyUpnDuringParsing(string command, bool useV3)
+    {
+        string[] arguments = ["badges", "mappings", command, "--badge-id", "badge-1", "--upn", " "];
+        if (useV3)
+        {
+            arguments = [.. arguments, "--use-v3-badge-api"];
+        }
+
+        var result = Program.CreateRootCommand().Parse(arguments);
+
+        Assert.Contains(result.Errors, error => error.Message.Contains("--upn", StringComparison.Ordinal));
     }
 
     [Fact]

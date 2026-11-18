@@ -19,7 +19,7 @@ namespace BadgeReleaseDemo;
 ///   1. Sign in as Printer Admin
 ///   2. Register a virtual printer
 ///   3. Share the printer (with jobs held for secure release)
-///   4. Create a badge collection and add a badge
+///   4. Create a badge group and add a badge
 ///   5. Advertise badge release support
 ///   6. Submit a PDF print job and verify it remains held
 ///   7. Resolve the badge, verify the job becomes fetchable, fetch it, and complete it
@@ -38,30 +38,29 @@ public class Program
     {
         var rootCommand = new RootCommand(
             "Universal Print Badge Release demo and badge management utility.");
+        var useV3GraphBadgeApiOption = new Option<bool>("--use-v3-badge-api")
+        {
+            Description = "Use the new Graph APIs for managing badge groups and mappings",
+            Recursive = true
+        };
+        rootCommand.Options.Add(useV3GraphBadgeApiOption);
 
-        var demoUseV1Option = CreateUseV1BadgeApiOption();
         var demoCommand = new Command("demo", "Run the full interactive badge release workflow");
-        demoCommand.Options.Add(demoUseV1Option);
         demoCommand.SetAction(async parseResult =>
         {
-            return await RunDemoAsync(parseResult.GetValue(demoUseV1Option));
+            return await RunDemoAsync(
+                parseResult.GetValue(useV3GraphBadgeApiOption));
         });
 
         rootCommand.Subcommands.Add(demoCommand);
-        rootCommand.Subcommands.Add(BadgeManagementCommands.Create());
+        rootCommand.Subcommands.Add(BadgeManagementCommands.Create(useV3GraphBadgeApiOption));
         return rootCommand;
     }
 
     internal static string[] NormalizeArguments(string[] args) =>
         args.Length == 0 ? ["--help"] : args;
 
-    private static Option<bool> CreateUseV1BadgeApiOption() =>
-        new("--use-v1-badge-api")
-        {
-            Description = "Use the legacy V1 badge lookup API during the demo"
-        };
-
-    private static async Task<int> RunDemoAsync(bool useV1BadgeApi)
+    private static async Task<int> RunDemoAsync(bool useV3GraphBadgeApi)
     {
         ConsoleHelper.WriteHeader("🏷️  Universal Print — Badge Release Demo");
 
@@ -75,8 +74,7 @@ public class Program
         var registrationBaseUrl = config.GetProperty("RegistrationBaseUrl").GetString()!;
         var ippServiceBaseUrl = config.GetProperty("IppServiceBaseUrl").GetString()!;
         var ippServicePrinterPath = config.GetProperty("IppServicePrinterPath").GetString()!;
-        var badgesV1ApiPath = badgeApiConfig.GetProperty("BadgesV1ApiPath").GetString()!;
-        var badgesV2ApiPath = badgeApiConfig.GetProperty("BadgesV2ApiPath").GetString()!;
+        var badgeLookupApiPath = badgeApiConfig.GetProperty("BadgeLookupApiPath").GetString()!;
         if (appId == "YOUR_APP_ID_HERE" || tenantId == "YOUR_TENANT_HERE")
         {
             ConsoleHelper.WriteError("Please set your App ID and Tenant in appsettings.json before running this demo.");
@@ -95,20 +93,18 @@ public class Program
 
         using var printerReg = new PrinterRegistration(registrationBaseUrl);
         using var printerShare = new PrinterSharing(graphBaseUrl);
-        using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl);
+        using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl, useV3GraphBadgeApi: useV3GraphBadgeApi);
         using var jobSubmission = new PrintJobSubmission(graphBaseUrl);
         using var ippClient = new PrinterIppClient(
             ippServiceBaseUrl,
             ippServicePrinterPath,
-            badgesV1ApiPath,
-            badgesV2ApiPath,
-            useV1BadgeApi,
+            badgeLookupApiPath,
             RefreshAndStorePrinterTokenAsync);
 
 
         string printerId = string.Empty;
         string shareId = string.Empty;
-        string badgeCollectionId = string.Empty;
+        string badgeGroupId = string.Empty;
         string createdBadgeId = string.Empty;
         string? savedDocumentPath = null;
 
@@ -151,20 +147,20 @@ public class Program
             ConsoleHelper.WriteKeyValue("Share ID", shareId);
 
             // ═══════════════════════════════════════════════════════════
-            // Step 4: Create badge collection (if needed)
+            // Step 4: Create badge group (if needed)
             // ═══════════════════════════════════════════════════════════
-            ConsoleHelper.WriteStep("🏷️", "Creating badge collection...");
+            ConsoleHelper.WriteStep("🏷️", "Creating badge group...");
             token = await auth.GetUserTokenAsync();
-            var collectionResult = await badgeMgmt.CreateBadgeCollectionAsync(token);
-            badgeCollectionId = collectionResult.Id;
-            if (collectionResult.Created)
+            var badgeGroupResult = await badgeMgmt.CreateBadgeGroupAsync(token);
+            badgeGroupId = badgeGroupResult.Id;
+            if (badgeGroupResult.Created)
             {
-                ConsoleHelper.WriteSuccess($"Badge collection provisioning completed (ID: {badgeCollectionId}).");
-                ConsoleHelper.WriteWarning(BadgeManagement.CollectionSettlingNote);
+                ConsoleHelper.WriteSuccess($"The badge group provisioning completed (ID: {badgeGroupId}).");
+                ConsoleHelper.WriteWarning(badgeMgmt.SettlingNote);
             }
             else
             {
-                ConsoleHelper.WriteSuccess($"Using existing badge collection (ID: {badgeCollectionId}).");
+                ConsoleHelper.WriteSuccess($"Using existing badge group (ID: {badgeGroupId}).");
             }
 
             // ═══════════════════════════════════════════════════════════
@@ -185,7 +181,7 @@ public class Program
             // ═══════════════════════════════════════════════════════════
             ConsoleHelper.WriteStep("🏷️", $"Adding badge '{badgeId}' → {auth.UserUpn}");
             token = await auth.GetUserTokenAsync();
-            await badgeMgmt.AddBadgeAsync(token, badgeCollectionId, badgeId, auth.UserUpn);
+            await badgeMgmt.AddBadgeAsync(token, badgeGroupId, badgeId, auth.UserUpn);
             createdBadgeId = badgeId;
             ConsoleHelper.WriteSuccess($"Badge '{badgeId}' mapped to {auth.UserUpn}.");
 
@@ -514,7 +510,7 @@ public class Program
             {
                 ConsoleHelper.WriteHeader("🧹 Cleaning up demo resources...");
 
-                if (!string.IsNullOrEmpty(createdBadgeId) && !string.IsNullOrEmpty(badgeCollectionId))
+                if (!string.IsNullOrEmpty(createdBadgeId) && !string.IsNullOrEmpty(badgeGroupId))
                 {
                     try
                     {
@@ -522,7 +518,7 @@ public class Program
                         var printToken = await auth.GetUserTokenAsync();
                         var badgeDeleted = await badgeMgmt.DeleteBadgeAsync(
                             printToken,
-                            badgeCollectionId,
+                            badgeGroupId,
                             createdBadgeId);
                         if (badgeDeleted)
                         {

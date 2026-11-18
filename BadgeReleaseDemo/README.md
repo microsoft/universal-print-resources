@@ -1,6 +1,6 @@
 # Badge Release Demo
 
-A console application that demonstrates the full [Universal Print](https://learn.microsoft.com/universal-print/) badge release lifecycle and provides focused commands for managing badge collections and mappings.
+A console application that demonstrates the full [Universal Print](https://learn.microsoft.com/universal-print/) badge release lifecycle and provides focused commands for managing badge groups and mappings.
 
 > **⚠️ IMPORTANT DISCLAIMER:** This demo is provided for **educational purposes only and must not be used as is**. It is intended as a reference to help you build your own scripts and applications. Note that it registers real printers and shares against your tenant; the demo cleans these resources up at the end, but you are responsible for verifying nothing is left behind.
 
@@ -21,7 +21,7 @@ The app walks through the complete lifecycle interactively:
 | 1. **Sign in** | Authenticate as a Printer Administrator | MSAL interactive auth |
 | 2. **Register printer** | Create a virtual printer with an in-memory certificate | `POST register.print.microsoft.com/api/v1.0/register` |
 | 3. **Share printer** | Create the share, enable secure-release holding, and validate that it is enabled | `POST graph.microsoft.com/v1.0/print/shares`, `PATCH` and `GET graph.microsoft.com/beta/print/shares/{id}` |
-| 4. **Create badge collection** | Provision a badge collection for the tenant (idempotent) | `POST graph.print.microsoft.com/v1.0/print/badgeCollections` |
+| 4. **Create badge group** | Provision a badge group for the tenant (idempotent) | `POST graph.print.microsoft.com/v1.0/print/badgeCollections` |
 | 5. **Add badge** | Map a user-provided badge ID to the signed-in user | `POST graph.print.microsoft.com/v1.0/print/badgeCollections/{id}/badges` |
 | 6. **Advertise badge release** | Acquire a printer token and advertise `job-release-action-supported=owner-authorized-badge` before any job is submitted | `POST {deviceTokenUrl}`, IPP Update-Output-Device-Attributes |
 | 7. **Submit print job** | Upload a PDF and start a print job on the shared printer | Graph Print Job APIs |
@@ -68,7 +68,7 @@ These permissions are consented by the user at sign-in:
 | Permission | Used For |
 |---|---|
 | `Printers.Create` | Registering a virtual printer via the registration service |
-| `PrintBadges.ReadWrite` | Creating, updating, and deleting badges and badge collections |
+| `PrintBadges.ReadWrite` | Creating, updating, and deleting badges and badge groups |
 
 ### Application Permissions (Universal Print Service)
 
@@ -145,12 +145,22 @@ tenant operations:
 dotnet run --no-build
 ```
 
-Use `dotnet run --no-build -- --help` to display the same usage explicitly. To run
-the demo with the legacy badge lookup API, use:
+Use `dotnet run --no-build -- --help` to display the same usage explicitly.
+
+To opt in to the new Graph badge contract, use:
 
 ```powershell
-dotnet run --no-build -- demo --use-v1-badge-api
+dotnet run --no-build -- demo --use-v3-badge-api
 ```
+
+The demo makes two different kinds of badge requests:
+
+- **Manage badges:** Graph APIs create badge groups and map badges to users.
+  `--use-v3-badge-api` selects the new Graph naming; omit it for the older Graph APIs.
+- **Look up a tapped badge:** The printer sends the badge ID to
+  `POST /api/v2.0/badges/lookup`. This request is the same with or without the flag.
+
+The flag does not change authentication, configured service URLs, or printing.
 
 ## Badge Management Commands
 
@@ -159,29 +169,29 @@ same interactive MSAL sign-in as the demo. You do not need to acquire or pass an
 access token separately.
 
 ```powershell
-# Collections
-dotnet run -- badges collections list
-dotnet run -- badges collections create
-dotnet run -- badges collections delete --collection-id <collection-id>
-dotnet run -- badges collections delete --collection-id <collection-id> --force
+# Groups
+dotnet run -- badges groups list
+dotnet run -- badges groups create
+dotnet run -- badges groups delete --group-id <group-id>
+dotnet run -- badges groups delete --group-id <group-id> --force
 
 # Badge mappings
-dotnet run -- badges mappings list --collection-id <collection-id>
-dotnet run -- badges mappings get --collection-id <collection-id> --badge-id <badge-id>
-dotnet run -- badges mappings create --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn>
-dotnet run -- badges mappings create --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn> --user-id <user-id>
-dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --upn <new-upn>
-dotnet run -- badges mappings update --collection-id <collection-id> --badge-id <badge-id> --upn <user-upn> --user-id <new-user-id>
-dotnet run -- badges mappings delete --collection-id <collection-id> --badge-id <badge-id>
+dotnet run -- badges mappings list --group-id <group-id>
+dotnet run -- badges mappings get --group-id <group-id> --badge-id <badge-id>
+dotnet run -- badges mappings create --group-id <group-id> --badge-id <badge-id> --upn <user-upn>
+dotnet run -- badges mappings create --group-id <group-id> --badge-id <badge-id> --upn <user-upn> --user-id <user-id>
+dotnet run -- badges mappings update --group-id <group-id> --badge-id <badge-id> --upn <new-upn>
+dotnet run -- badges mappings update --group-id <group-id> --badge-id <badge-id> --upn <user-upn> --user-id <new-user-id>
+dotnet run -- badges mappings delete --group-id <group-id> --badge-id <badge-id>
 ```
 
-`--collection-id` may be omitted when the tenant has exactly one badge collection.
-When zero or multiple collections exist, the command reports the available next step
-instead of selecting a collection implicitly. Collection deletion prompts for
+`--group-id` may be omitted when the tenant has exactly one badge group.
+When zero or multiple groups exist, the command reports the available next step
+instead of selecting a group implicitly. Group deletion prompts for
 confirmation unless `--force` is specified.
 
-Badge collections fit in one service response, so collection listing does not paginate.
-Badge mapping listing is not implemented by the service yet. The CLI reports the
+Badge groups fit in one service response, so group listing does not paginate.
+Without V3, badge mapping listing is not implemented by the service yet. The CLI reports the
 resulting `501 Not Implemented` response without treating it as an authentication or
 connectivity failure.
 
@@ -191,14 +201,35 @@ UPN when it is not changing.
 
 CSV import is not currently included.
 
+### Using the new Graph APIs
+
+Add `--use-v3-badge-api` to `demo` or any `badges` command to use the new Graph APIs:
+
+```powershell
+dotnet run -- badges --use-v3-badge-api groups list
+dotnet run -- badges --use-v3-badge-api mappings create --group-id <group-id> --badge-id <badge-id> --upn <user-upn>
+```
+
+The same commands and options shown above work in both modes. A user principal name
+(`--upn`) is required when creating or updating a mapping. With the new Graph APIs,
+`--user-id`, if supplied, must be a GUID.
+Legacy `collections` and `--collection-id` names remain supported as aliases for
+`groups` and `--group-id`; these names do not select the API version.
+
+Use `--badge-id` to identify a badge. Optional details, such as a physical badge ID
+or creation date, may appear as `(null)` when the service does not provide them.
+Bulk import is not available. If a feature returns `501 Not Implemented`, the
+command reports the error rather than switching to an older API. The new APIs
+must be available on the target service and enabled for your tenant.
+
 ## Project Structure
 
 ```
 BadgeReleaseDemo/
 ├── Program.cs                          # CLI root and full demo orchestration
-├── BadgeManagementCommands.cs         # Badge collection and mapping commands
+├── BadgeManagementCommands.cs         # Badge group and mapping commands
 ├── appsettings.json                    # App ID, tenant, and service endpoints
-├── badgeapisettings.json               # App-owned V1 and V2 badge API routes
+├── badgeapisettings.json               # App-owned printer badge lookup route
 │
 ├── Auth/
 │   └── AuthHelper.cs                   # MSAL interactive auth + JWT-bearer device token flow
@@ -206,7 +237,7 @@ BadgeReleaseDemo/
 ├── GraphApi/
 │   ├── PrinterRegistration.cs          # Printer registration via register.print.microsoft.com
 │   ├── PrinterSharing.cs               # Share CRUD (with holdJobsForSecureRelease) + printer delete via Graph
-│   ├── BadgeManagement.cs              # Badge collection + badge CRUD via graph.print.microsoft.com
+│   ├── BadgeManagement.cs              # Badge group + badge CRUD via graph.print.microsoft.com
 │   └── PrintJobSubmission.cs           # Job creation, document upload, job start via Graph
 │
 ├── IppOperations/
@@ -221,9 +252,9 @@ BadgeReleaseDemo/
     └── SampleDocument.pdf              # Default test PDF (or supply your own)
 
 BadgeReleaseDemo.Tests/
-├── CommandLineTests.cs                 # Command routing and V1 option scope
-├── BadgeManagementTests.cs             # Collection polling and mapping update contracts
-└── PrinterIppClientTests.cs            # V1 and V2 badge lookup request shapes
+├── CommandLineTests.cs                 # Command routing and Graph API selection
+├── BadgeManagementTests.cs             # Legacy/V3 CRUD, nulls, errors, and operation polling
+└── PrinterIppClientTests.cs            # Printer badge lookup requests and token refresh
 ```
 
 ## Authentication Flows
@@ -247,8 +278,8 @@ The printer authenticates using a certificate-based JWT-bearer flow:
 
 ## Badge API Reference
 
-The default V2 Badge API is a REST endpoint on the Universal Print IPP Service. It
-keeps the badge ID in the request body instead of the URL:
+Printer badge lookup is a REST endpoint on the Universal Print IPP Service.
+It always sends the badge ID in the request body:
 
 ```
 POST https://print.print.microsoft.com/api/v2.0/badges/lookup
@@ -260,13 +291,6 @@ Authorization: Bearer {printer-device-token}
 {
   "badgeId": "123"
 }
-```
-
-Run the demo with `demo --use-v1-badge-api` to use the legacy
-`GET https://print.print.microsoft.com/api/v1.0/badges/{badgeId}` endpoint instead:
-
-```powershell
-dotnet run -- demo --use-v1-badge-api
 ```
 
 **Success response (200 OK):**
@@ -296,7 +320,7 @@ The `userURI` (a `mailto:` URI) is then passed as the `requesting-user-uri` attr
 |---------|-------------|-----|
 | `403 Forbidden` on badge resolution | Missing `PrintBadges.Read` app permission, or tenant not enrolled in the Badge Release preview | Grant the permission and admin-consent it in the Azure portal. If the feature is not enabled, see the note below. |
 | `401 Unauthorized` on IPP operations | Printer device token expired | The demo acquires a fresh token; if it persists, re-run |
-| `404 Badge collection not found` when adding a badge after deleting and recreating a collection | Badge collection deletion and recreation can take time to settle across the service, even after the new collection reports that provisioning succeeded | Wait a few minutes, then retry adding the badge. Avoid repeatedly deleting and recreating collections during normal testing. |
+| `404` group not found when adding a badge after deleting and recreating a group | Badge group deletion and recreation can take time to settle across the service, even after the new group reports that provisioning succeeded | Wait a few minutes, then retry adding the badge. Avoid repeatedly deleting and recreating groups during normal testing. |
 | No fetchable jobs found | Job not yet processed by the service | Wait a few seconds and retry; in production, printers poll |
 | `ServerErrorInternalError` on Update-Job-Status | Job may already be in a terminal state | Check the correlation headers in the console output and investigate server-side |
 | Cleanup fails to delete PDF | File locked by PDF viewer (e.g., Adobe) | Close the viewer, then delete manually |
