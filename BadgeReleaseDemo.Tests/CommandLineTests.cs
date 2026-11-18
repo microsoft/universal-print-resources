@@ -10,19 +10,9 @@ public class CommandLineTests
     }
 
     [Fact]
-    public void V1Option_IsAcceptedOnlyByDemo()
+    public async Task RemovedV1Option_ReturnsFailureExitCode()
     {
-        var root = Program.CreateRootCommand();
-
-        Assert.Empty(root.Parse(["demo", "--use-v1-badge-api"]).Errors);
-        Assert.NotEmpty(root.Parse(["badges", "--use-v1-badge-api"]).Errors);
-        Assert.NotEmpty(root.Parse(["--use-v1-badge-api", "badges"]).Errors);
-    }
-
-    [Fact]
-    public async Task InvalidV1OptionScope_ReturnsFailureExitCode()
-    {
-        var parseResult = Program.CreateRootCommand().Parse(["badges", "--use-v1-badge-api"]);
+        var parseResult = Program.CreateRootCommand().Parse(["demo", "--use-v1-badge-api"]);
 
         Assert.Equal(1, await parseResult.InvokeAsync());
     }
@@ -30,12 +20,11 @@ public class CommandLineTests
     [Theory]
     [InlineData("--use-v3-badge-api demo")]
     [InlineData("demo --use-v3-badge-api")]
-    [InlineData("demo --use-v3-badge-api --use-v1-badge-api")]
     [InlineData("badges --use-v3-badge-api groups list")]
     [InlineData("badges groups create --use-v3-badge-api")]
     [InlineData("badges mappings get --use-v3-badge-api --group-id group-1 --badge-id badge-1")]
     [InlineData("badges mappings create --use-v3-badge-api --group-id group-1 --badge-id badge-1 --upn user@example.com")]
-    public void V3Option_IsRecursiveAndIndependentOfIppLookup(string arguments)
+    public void V3GraphOption_IsRecursive(string arguments)
     {
         var root = Program.CreateRootCommand();
 
@@ -80,6 +69,24 @@ public class CommandLineTests
         Assert.Contains(
             parseResult.Errors,
             error => error.Message.Contains("--upn", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("create", false)]
+    [InlineData("update", false)]
+    [InlineData("create", true)]
+    [InlineData("update", true)]
+    public void MappingWrites_RejectEmptyUpnDuringParsing(string command, bool useV3)
+    {
+        string[] arguments = ["badges", "mappings", command, "--badge-id", "badge-1", "--upn", " "];
+        if (useV3)
+        {
+            arguments = [.. arguments, "--use-v3-badge-api"];
+        }
+
+        var result = Program.CreateRootCommand().Parse(arguments);
+
+        Assert.Contains(result.Errors, error => error.Message.Contains("--upn", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -21,9 +21,7 @@ public class PrinterIppClient : IDisposable
 
     private readonly string ippServiceBaseUrl;
     private readonly string ippServicePrinterPath;
-    private readonly string badgesV1ApiPath;
-    private readonly string badgesV2ApiPath;
-    private readonly bool useV1BadgeApi;
+    private readonly string badgeLookupApiPath;
     private readonly HttpClient httpClient;
     private readonly Func<Task<string>>? refreshPrinterToken;
     private int requestIdCounter;
@@ -31,17 +29,13 @@ public class PrinterIppClient : IDisposable
     public PrinterIppClient(
         string ippServiceBaseUrl,
         string ippServicePrinterPath,
-        string badgesV1ApiPath,
-        string badgesV2ApiPath,
-        bool useV1BadgeApi,
+        string badgeLookupApiPath,
         Func<Task<string>>? refreshPrinterToken = null,
         HttpMessageHandler? httpMessageHandler = null)
     {
         this.ippServiceBaseUrl = ippServiceBaseUrl.TrimEnd('/');
         this.ippServicePrinterPath = ippServicePrinterPath;
-        this.badgesV1ApiPath = badgesV1ApiPath;
-        this.badgesV2ApiPath = badgesV2ApiPath;
-        this.useV1BadgeApi = useV1BadgeApi;
+        this.badgeLookupApiPath = badgeLookupApiPath;
         this.refreshPrinterToken = refreshPrinterToken;
         httpClient = httpMessageHandler == null
             ? new HttpClient()
@@ -77,7 +71,7 @@ public class PrinterIppClient : IDisposable
 
     /// <summary>
     /// Calls the IPPService BadgesController to resolve a badge ID to a user.
-    /// Uses V2 by default, with V1 available for compatibility.
+    /// Sends the badge ID in a POST request body.
     /// Returns (badgeId, userUri, userId, userIdPresent) or null if not found.
     /// </summary>
     public async Task<(string BadgeId, string UserUri, string? UserId, bool UserIdPresent)?> ResolveBadgeAsync(
@@ -141,18 +135,12 @@ public class PrinterIppClient : IDisposable
 
     private HttpRequestMessage CreateBadgeLookupRequest(string badgeId)
     {
-        if (useV1BadgeApi)
-        {
-            return new HttpRequestMessage(HttpMethod.Get,
-                $"{ippServiceBaseUrl}{badgesV1ApiPath}/{Uri.EscapeDataString(badgeId)}");
-        }
-
         var requestBody = JsonSerializer.Serialize(new
         {
             badgeId
         });
 
-        return new HttpRequestMessage(HttpMethod.Post, $"{ippServiceBaseUrl}{badgesV2ApiPath}")
+        return new HttpRequestMessage(HttpMethod.Post, $"{ippServiceBaseUrl}{badgeLookupApiPath}")
         {
             Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
         };

@@ -7,13 +7,13 @@ namespace BadgeReleaseDemo.Tests;
 public class PrinterIppClientTests
 {
     [Fact]
-    public async Task ResolveBadgeAsync_UsesV2PostWithOnlyBadgeIdByDefault()
+    public async Task ResolveBadgeAsync_UsesPostWithOnlyBadgeId()
     {
         var handler = new RecordingHttpMessageHandler((_, _) =>
             RecordingHttpMessageHandler.JsonResponse(
                 HttpStatusCode.OK,
                 """{"badgeId":"badge/42","userURI":"mailto:user@contoso.com"}"""));
-        using var client = CreateClient(useV1BadgeApi: false, handler);
+        using var client = CreateClient(handler);
 
         var result = await client.ResolveBadgeAsync("printer-token", "badge/42");
 
@@ -30,23 +30,6 @@ public class PrinterIppClientTests
     }
 
     [Fact]
-    public async Task ResolveBadgeAsync_UsesEscapedV1GetWhenRequested()
-    {
-        var handler = new RecordingHttpMessageHandler((_, _) =>
-            RecordingHttpMessageHandler.JsonResponse(
-                HttpStatusCode.OK,
-                """{"badgeId":"badge/42","userURI":"mailto:user@contoso.com"}"""));
-        using var client = CreateClient(useV1BadgeApi: true, handler);
-
-        await client.ResolveBadgeAsync("printer-token", "badge/42");
-
-        var request = Assert.Single(handler.Requests);
-        Assert.Equal(HttpMethod.Get, request.Method);
-        Assert.Equal("https://print.example/api/v1.0/badges/badge%2F42", request.Uri);
-        Assert.Null(request.Body);
-    }
-
-    [Fact]
     public async Task ResolveBadgeAsync_RefreshesExpiredPrinterTokenOnce()
     {
         var handler = new RecordingHttpMessageHandler((_, requestIndex) =>
@@ -59,7 +42,6 @@ public class PrinterIppClientTests
                     """{"badgeId":"badge-1","userURI":"mailto:user@contoso.com"}"""));
         var refreshCount = 0;
         using var client = CreateClient(
-            useV1BadgeApi: false,
             handler,
             () =>
             {
@@ -91,7 +73,7 @@ public class PrinterIppClientTests
                     0x03                    // end-of-attributes
                 ])
             });
-        using var client = CreateClient(useV1BadgeApi: false, handler);
+        using var client = CreateClient(handler);
 
         var result = await client.GetJobsAsync(
             "printer-token",
@@ -103,15 +85,12 @@ public class PrinterIppClientTests
     }
 
     private static PrinterIppClient CreateClient(
-        bool useV1BadgeApi,
         HttpMessageHandler handler,
         Func<Task<string>>? refreshPrinterToken = null) =>
         new(
             "https://print.example",
             "/printers",
-            "/api/v1.0/badges",
             "/api/v2.0/badges/lookup",
-            useV1BadgeApi,
             refreshPrinterToken,
             httpMessageHandler: handler);
 }

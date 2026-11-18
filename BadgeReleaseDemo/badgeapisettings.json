@@ -1,4 +1,3 @@
 {
-  "BadgesV1ApiPath": "/api/v1.0/badges",
-  "BadgesV2ApiPath": "/api/v2.0/badges/lookup"
+  "BadgeLookupApiPath": "/api/v2.0/badges/lookup"
 }

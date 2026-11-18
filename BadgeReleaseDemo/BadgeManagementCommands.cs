@@ -14,12 +14,13 @@ namespace BadgeReleaseDemo;
 
 public sealed class BadgeManagementCommands
 {
-    private readonly Option<bool> useV3Option;
+    private readonly Option<bool> useV3GraphBadgeApiOption;
 
-    private BadgeManagementCommands(Option<bool> useV3Option) => this.useV3Option = useV3Option;
+    private BadgeManagementCommands(Option<bool> useV3GraphBadgeApiOption) =>
+        this.useV3GraphBadgeApiOption = useV3GraphBadgeApiOption;
 
-    public static Command Create(Option<bool> useV3Option) =>
-        new BadgeManagementCommands(useV3Option).CreateCommand();
+    public static Command Create(Option<bool> useV3GraphBadgeApiOption) =>
+        new BadgeManagementCommands(useV3GraphBadgeApiOption).CreateCommand();
 
     private Command CreateCommand()
     {
@@ -41,12 +42,9 @@ public sealed class BadgeManagementCommands
             ConsoleHelper.WriteInfo($"Badge groups: {badgeGroups.Count}");
             foreach (var badgeGroup in badgeGroups)
             {
-                ConsoleHelper.WriteKeyValue(client.ResourceIdLabel, badgeGroup.Id);
-                if (client.UseV3BadgeApi)
-                {
-                    ConsoleHelper.WriteKeyValue("Display name", badgeGroup.DisplayName);
-                    ConsoleHelper.WriteKeyValue("Created date/time", badgeGroup.CreatedDateTime);
-                }
+                ConsoleHelper.WriteKeyValue("Group ID", badgeGroup.Id);
+                ConsoleHelper.WriteKeyValue("Display name", badgeGroup.DisplayName);
+                ConsoleHelper.WriteKeyValue("Created date/time", badgeGroup.CreatedDateTime);
             }
             ConsoleHelper.WriteInfo("Listing badge groups fits in a single service response; pagination is not required.");
 
@@ -61,7 +59,7 @@ public sealed class BadgeManagementCommands
                 result.Created
                     ? "The badge group provisioning completed."
                     : "Using existing badge group.");
-            ConsoleHelper.WriteKeyValue(client.ResourceIdLabel, result.Id);
+            ConsoleHelper.WriteKeyValue("Group ID", result.Id);
             if (result.Created)
             {
                 ConsoleHelper.WriteWarning(client.SettlingNote);
@@ -140,7 +138,7 @@ public sealed class BadgeManagementCommands
             ConsoleHelper.WriteInfo($"Badge mappings: {result.Badges.Count}");
             foreach (var badge in result.Badges)
             {
-                WriteBadge(badge, client.UseV3BadgeApi);
+                WriteBadge(badge);
             }
 
             return 0;
@@ -170,7 +168,7 @@ public sealed class BadgeManagementCommands
                 return 1;
             }
 
-            WriteBadge(badge, client.UseV3BadgeApi);
+            WriteBadge(badge);
             return 0;
         }));
         return command;
@@ -202,7 +200,7 @@ public sealed class BadgeManagementCommands
                 parseResult.GetRequiredValue(upnOption),
                 parseResult.GetValue(userIdOption));
             ConsoleHelper.WriteSuccess("Badge mapping created.");
-            WriteBadge(badge, client.UseV3BadgeApi);
+            WriteBadge(badge);
             return 0;
         }));
         return command;
@@ -220,6 +218,7 @@ public sealed class BadgeManagementCommands
         command.Options.Add(upnOption);
         command.Options.Add(userIdOption);
         AddNonEmptyValidator(command, badgeIdOption);
+        AddNonEmptyValidator(command, upnOption);
         command.SetAction(async parseResult =>
         {
             var upn = parseResult.GetRequiredValue(upnOption);
@@ -238,7 +237,7 @@ public sealed class BadgeManagementCommands
                     upn,
                     userId);
                 ConsoleHelper.WriteSuccess("Badge mapping updated.");
-                WriteBadge(badge, client.UseV3BadgeApi);
+                WriteBadge(badge);
                 return 0;
             });
         });
@@ -328,7 +327,7 @@ public sealed class BadgeManagementCommands
             ConsoleHelper.WriteSuccess($"Signed in as: {upn}");
             var accessToken = await auth.GetUserTokenAsync();
             using var client = new BadgeManagement(
-                graphPrintBaseUrl, useV3BadgeApi: parseResult.GetValue(useV3Option));
+                graphPrintBaseUrl, useV3GraphBadgeApi: parseResult.GetValue(useV3GraphBadgeApiOption));
             return await operation(client, accessToken);
         }
         catch (FileNotFoundException exception)
@@ -387,23 +386,20 @@ public sealed class BadgeManagementCommands
         return badgeGroups.Count switch
         {
             0 => throw new InvalidOperationException(
-                $"No badge group exists. Create one with 'badges groups create{(client.UseV3BadgeApi ? " --use-v3-badge-api" : "")}'."),
+                $"No badge group exists. Create one with 'badges groups create{(client.UseV3GraphBadgeApi ? " --use-v3-badge-api" : "")}'."),
             1 => badgeGroups[0].Id,
             _ => throw new InvalidOperationException(
                 $"Multiple badge groups exist. Specify --group-id with one of: {string.Join(", ", badgeGroups.Select(item => item.Id))}")
         };
     }
 
-    private static void WriteBadge(BadgeMapping badge, bool useV3BadgeApi)
+    private static void WriteBadge(BadgeMapping badge)
     {
         ConsoleHelper.WriteKeyValue("Badge ID", badge.Id);
-        ConsoleHelper.WriteKeyValue(useV3BadgeApi ? "User principal name" : "UPN", badge.Upn);
+        ConsoleHelper.WriteKeyValue("User principal name", badge.Upn);
         ConsoleHelper.WriteKeyValue("User ID", badge.UserId);
-        if (useV3BadgeApi)
-        {
-            ConsoleHelper.WriteKeyValue("Physical badge ID", badge.PhysicalBadgeId);
-            ConsoleHelper.WriteKeyValue("Created date/time", badge.CreatedDateTime);
-        }
+        ConsoleHelper.WriteKeyValue("Physical badge ID", badge.PhysicalBadgeId);
+        ConsoleHelper.WriteKeyValue("Created date/time", badge.CreatedDateTime);
     }
 
     private static JsonElement LoadConfiguration()

@@ -38,38 +38,29 @@ public class Program
     {
         var rootCommand = new RootCommand(
             "Universal Print Badge Release demo and badge management utility.");
-        var useV3Option = new Option<bool>("--use-v3-badge-api")
+        var useV3GraphBadgeApiOption = new Option<bool>("--use-v3-badge-api")
         {
-            Description = "Use Graph badge groups and the V3 badge contract; does not change IPP badge lookup",
+            Description = "Use the new Graph APIs for managing badge groups and mappings",
             Recursive = true
         };
-        rootCommand.Options.Add(useV3Option);
+        rootCommand.Options.Add(useV3GraphBadgeApiOption);
 
-        var demoUseV1Option = CreateUseV1BadgeApiOption();
         var demoCommand = new Command("demo", "Run the full interactive badge release workflow");
-        demoCommand.Options.Add(demoUseV1Option);
         demoCommand.SetAction(async parseResult =>
         {
             return await RunDemoAsync(
-                parseResult.GetValue(demoUseV1Option),
-                parseResult.GetValue(useV3Option));
+                parseResult.GetValue(useV3GraphBadgeApiOption));
         });
 
         rootCommand.Subcommands.Add(demoCommand);
-        rootCommand.Subcommands.Add(BadgeManagementCommands.Create(useV3Option));
+        rootCommand.Subcommands.Add(BadgeManagementCommands.Create(useV3GraphBadgeApiOption));
         return rootCommand;
     }
 
     internal static string[] NormalizeArguments(string[] args) =>
         args.Length == 0 ? ["--help"] : args;
 
-    private static Option<bool> CreateUseV1BadgeApiOption() =>
-        new("--use-v1-badge-api")
-        {
-            Description = "Use the legacy V1 badge lookup API during the demo"
-        };
-
-    private static async Task<int> RunDemoAsync(bool useV1BadgeApi, bool useV3BadgeApi)
+    private static async Task<int> RunDemoAsync(bool useV3GraphBadgeApi)
     {
         ConsoleHelper.WriteHeader("🏷️  Universal Print — Badge Release Demo");
 
@@ -83,8 +74,7 @@ public class Program
         var registrationBaseUrl = config.GetProperty("RegistrationBaseUrl").GetString()!;
         var ippServiceBaseUrl = config.GetProperty("IppServiceBaseUrl").GetString()!;
         var ippServicePrinterPath = config.GetProperty("IppServicePrinterPath").GetString()!;
-        var badgesV1ApiPath = badgeApiConfig.GetProperty("BadgesV1ApiPath").GetString()!;
-        var badgesV2ApiPath = badgeApiConfig.GetProperty("BadgesV2ApiPath").GetString()!;
+        var badgeLookupApiPath = badgeApiConfig.GetProperty("BadgeLookupApiPath").GetString()!;
         if (appId == "YOUR_APP_ID_HERE" || tenantId == "YOUR_TENANT_HERE")
         {
             ConsoleHelper.WriteError("Please set your App ID and Tenant in appsettings.json before running this demo.");
@@ -103,14 +93,12 @@ public class Program
 
         using var printerReg = new PrinterRegistration(registrationBaseUrl);
         using var printerShare = new PrinterSharing(graphBaseUrl);
-        using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl, useV3BadgeApi: useV3BadgeApi);
+        using var badgeMgmt = new BadgeManagement(graphPrintBaseUrl, useV3GraphBadgeApi: useV3GraphBadgeApi);
         using var jobSubmission = new PrintJobSubmission(graphBaseUrl);
         using var ippClient = new PrinterIppClient(
             ippServiceBaseUrl,
             ippServicePrinterPath,
-            badgesV1ApiPath,
-            badgesV2ApiPath,
-            useV1BadgeApi,
+            badgeLookupApiPath,
             RefreshAndStorePrinterTokenAsync);
 
 
